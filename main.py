@@ -712,7 +712,8 @@ def main():
     print(f"🌐 Домен: {DOMAIN}")
     print("⏳ Ожидание команд...")
     
-    application.run_polling(allowed_updates=Update.ALL_UPDATES)
+    # Исправленная строка - убрали неподдерживаемый параметр
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

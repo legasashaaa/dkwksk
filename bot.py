@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "1709490182"))  # Ваш Telegram ID для уведомлений
 DOMAIN = os.environ.get("DOMAIN", "http://localhost:5050")  # Локальный сервер
 WEB_SERVER_PORT = int(os.environ.get("PORT", "5050"))

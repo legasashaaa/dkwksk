@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Замените на ваш токен
+BOT_TOKEN = "8563753978:AAFGVXvRanl0w4DSPfvDYh08aHPLPE0hQ1I"  # Замените на ваш токен
 ADMIN_ID = 1709490182  # Ваш Telegram ID для уведомлений
 DOMAIN = "http://localhost:8080"  # Локальный домен для тестирования
 SERVER_PORT = 8080  # Порт сервера

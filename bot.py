@@ -39,8 +39,8 @@ ADMIN_ID = 1709490182  # Ваш Telegram ID
 DOMAIN = "https://ваш-ник.pythonanywhere.com"  # Ваш домен на PythonAnywhere или ngrok
 
 # Для ngrok (если используете локально)
-USE_NGROK = False  # Поставьте True если хотите использовать ngrok для локального тестирования
-NGROK_AUTH_TOKEN = "ваш_токен_ngrok"  # Токен из ngrok.com
+USE_NGROK = True  # Поставьте True если хотите использовать ngrok для локального тестирования
+NGROK_AUTH_TOKEN = "395k1lSh7JNebg7M1N5PegsowC2_iDiMsoKmsWqLbXPL2qjo"  # Токен из ngrok.com
 
 # ========== FLASK СЕРВЕР ==========
 app = Flask(__name__, static_folder='static')
